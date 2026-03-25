@@ -1,0 +1,606 @@
+---
+title: "Utiliser MSstatsPTM après une recherche MaxQuant"
+author: "Quentin Giai Gianetto"
+date: ' '
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 4
+    number_sections: no
+    theme: united
+    highlight: tango
+---
+
+<!-- ```{r setup, include=FALSE} -->
+<!-- knitr::opts_chunk$set(echo = TRUE) -->
+<!-- ``` -->
+
+# 1. But de ce tutoriel
+
+Dans des études de modifications post-traductionnelles (e.g., phosphorylation), un peptide modifié peut varier en abundance entre des conditions biologiques, sans que cette variation d'abondance ne soit liée à sa modification. En effet, elle peut simplement être liée à la variation d'abondance de sa protéine d'appartenance. Il faut donc vérifier que la dynamique du peptide modifié soit différente de celle de sa protéine d'appartenance entre les conditions étudiées. 
+
+MSstatsPTM adresse ce problème en produisant trois modèles:
+  
+- **PTM.Model**: analyse différentielle du peptide modifié ("unadjusted")
+- **PROTEIN.Model**: analyse différentielle de la protéine d'appartenance ("unmodified proteome")
+- **ADJUSTED.Model**: variations de PTM ajustées par rapport aux variations de la protéine ("*PTM change* − *protein change*")
+
+Nous allons utiliser un dataset public disponible sur PRIDE (**PXD020019**). C'est une analyse protéomique de cellules infectées par le SARS-COV-2 basée sur le logiciel MaxQuant. Il contient des échantillons enrichis en phosphorylation, d'autres en ubiquitination, et des échantillons non-enrichis.
+
+# 2. Installation et chargement des packages R nécessaires
+
+```{r, eval=FALSE}
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("MSstats")
+BiocManager::install("MSstatsPTM")
+install.packages("data.table")
+install.packages("stringi")
+```
+
+```{r setup, message=FALSE, warning=FALSE}
+library(MSstatsPTM)
+library(MSstats)
+library(data.table)
+library(stringi)
+
+# knitr::opts_chunk$set(
+#   collapse = TRUE,
+#   comment = "#>",
+#   fig.width = 8,
+#   fig.height = 6
+# )
+```
+
+---
+  
+# 3. Téléchargement et inspection du fichier "evidence" de MaxQuant:
+  
+```{r}
+# This evidence.txt is large (~580 MB). Download may take time.
+evidence <- fread("https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/evidence.txt")
+
+# MaxQuant columns sometimes contain spaces; MSstats converters often work better with dots.
+setnames(evidence, gsub(" ", ".", names(evidence), fixed = TRUE))
+
+# Quick sanity check: key columns
+evidence[1:5, .(Raw.file, Experiment, Fraction)]
+unique(evidence$Fraction)
+```
+# 4. Préparation des inputs pour l'analyse
+
+## 4.1. Identifier les runs liés au protéome "global" et ceux enrichis en PTM.
+
+Dans ce dataset,dans la colonne `Experiment`, on a:
+  
+- Global proteome runs: `mock_6h_1`, `SARS_COV2_24h_4`, ...
+- Phospho-enriched runs: `Phospho_mock_6h_1`, ...
+- Ubi-enriched runs: `Ubi_mock_6h_1`, ...
+
+```{r}
+evidence[, .N, by = Experiment][order(-N)][1:30]
+```
+
+---
+  
+## 4.2. Séparer le fichier "evidence" en un fichier lié aux enrichissements, et un lié aux protéines
+  
+Le fichier "evidence" contient des runs de différentes expériences (global, phospho enrichment, ubi enrichment).  
+Pour pouvoir utiliser correctement les fonctions de *MSstatsPTM*, il faut créer des datasets différents:
+
+- `evidence_ptm`: seulement les échantillons enrichis en phosphorylation 
+- `evidence_prot`: seulement les échantillons de protéomique global (sans enrichissement)
+
+```{r}
+is_phospho <- grepl("^Phospho_", evidence$Experiment)
+is_ubi     <- grepl("^Ubi_", evidence$Experiment)
+is_global  <- !is_phospho & !is_ubi
+
+evidence_ptm  <- evidence[is_phospho]
+evidence_prot <- evidence[is_global]
+
+# Check the experiments we kept
+evidence_ptm[, unique(Experiment)]
+evidence_prot[, unique(Experiment)]
+```
+
+---
+  
+## 4.3. Construire la table "annotation" contenant le design expérimental
+  
+MSstats/MSstatsPTM nécessitent une table **annotation** qui contient le design expérimental de l'expérience :
+  
+- les noms des runs/échantillons (`Run`)
+- les noms des conditions biologiques (`Condition`)
+- les numéros/noms des réplicats biologiques au sein de chaque condition (`BioReplicate`)
+
+Dans notre cas, ces informations sont contenues dans la colonne `Experiment`:
+
+- `Phospho_mock_6h_2` → Condition=mock, Time=6h, BioReplicate=2
+- `SARS_COV2_24h_4` → Condition=SARS_COV2, Time=24h, BioReplicate=4
+
+Pour cela, nous allons utiliser un "regex" :
+
+```{r}
+pat <- "^(?:(Ubi|Phospho)_)?(mock|SARS_COV2)_(6h|24h)_([0-9]+)$"
+```
+
+Puis on créé une fonction qui va aller chercher les informations dans les noms des échantillons :
+```{r}
+make_annot <- function(ev) {
+  # One row per Raw.file (= Run)
+  annot_dt <- unique(ev[, .(Run = Raw.file, Experiment)], by = "Run")
+  
+  m <- stringi::stri_match_first_regex(annot_dt$Experiment, pat)
+  
+  annot_dt[, `:=`(
+    Enrichment   = fifelse(is.na(m[,2]), "Global", m[,2]),
+    Condition    = m[,3],
+    Time         = m[,4],
+    BioReplicate = as.integer(m[,5])
+  )]
+  
+  # If parsing fails, stop early (beginner-friendly)
+  if (nrow(annot_dt[is.na(Condition) | is.na(Time) | is.na(BioReplicate)]) > 0) {
+    print(annot_dt[is.na(Condition) | is.na(Time) | is.na(BioReplicate)])
+    stop("Some Experiment labels did not match the expected pattern.")
+  }
+  
+  # Return the minimal annotation needed by converters
+  as.data.frame(annot_dt[, .(Run, Condition, BioReplicate, Time, Enrichment)])
+}
+
+annot_ptm  <- make_annot(evidence_ptm)
+annot_prot <- make_annot(evidence_prot)
+
+head(annot_ptm)
+head(annot_prot)
+
+# Quick check: how many runs?
+nrow(annot_ptm)
+nrow(annot_prot)
+```
+
+---
+  
+## 4.4. Préparer le fichier FASTA (Human + SARS-CoV-2)
+
+Certaines sorties de MaxQuant ne fournissent pas directement la position du site de PTM dans la *protéine*.  
+MSstatsPTM peut utiliser un fichier FASTA pour associer les peptides modifiés à leurs positions de site dans la séquence protéique.
+
+Nous téléchargeons et fusionnons deux fichiers FASTA, puis nous les enregistrons localement.
+
+```{r}
+fasta_human_url <- "https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/uniprot-9606_proteome_human_reviewed_canonical_isoforms_191008.fasta"
+fasta_sars_url  <- "https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/20200531_fasta_sars-cov-2.fasta"
+
+fasta_human <- fread(fasta_human_url, header = FALSE)
+fasta_sars  <- fread(fasta_sars_url,  header = FALSE)
+
+fasta_all <- rbind(fasta_human, fasta_sars)
+
+# Use a temp file for portability (works on any machine)
+fasta_path <- file.path(tempdir(), "proteins_human_plus_sarscov2.fasta")
+writeLines(fasta_all$V1, con = fasta_path)
+
+# Show a FASTA header example
+fasta_all$V1[1]
+fasta_path
+```
+
+---
+  
+# 5. Convertir le fichier "evidence" de MaxQuant en un input "MSstatsPTM"
+  
+## 5.1. Runs enrichis en phosphorylation
+  
+Paramètres clés :
+
+- `mod_id` : motif (pattern) permettant d’identifier les modifications de phosphorylation dans les chaînes de caractères de MaxQuant.
+
+- `use_unmod_peptides = FALSE` : puisqu'il s’agit d’un fichier *evidence* issu d’un enrichissement en phosphopeptides, nous ne voulons donc pas inférer ici l’abondance globale des protéines.
+
+```{r}
+ms_ptm <- MaxQtoMSstatsPTMFormat(
+  evidence = evidence_ptm,
+  annotation = annot_ptm[, c("Run", "Condition", "BioReplicate")],
+  fasta = fasta_path,
+  fasta_protein_name = "uniprot_ac",         # FASTA headers like >sp|Q9HBI6|... (accession = Q9HBI6)
+  mod_id = "\\(Phospho \\(STY\\)\\)",
+  use_unmod_peptides = FALSE,
+  labeling_type = "LF",
+  which_proteinid_ptm = "Proteins"
+)
+
+# What did we get?
+names(ms_ptm)
+head(ms_ptm$PTM)
+```
+
+---
+  
+## 5.2. Runs de la protéomique "globale" ("unmodified proteome")
+  
+Pour le protéome global, nous allons utiliser le package R `MSstats` et les fichiers:
+
+- `evidence.txt`
+
+- `proteinGroups.txt`
+
+On télécharge `proteinGroups.txt` depuis PRIDE, on créé ensuite le fichier evidence "global", le fichier "annotation" correspondant puis on le convertit au format MSstats.
+
+```{r}
+# Download proteinGroups.txt (needed by MSstats MaxQuant converter)
+pg_url <- "https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/proteinGroups.txt"
+pg_file <- file.path(tempdir(), "proteinGroups.txt")
+download.file(pg_url, destfile = pg_file, mode = "wb")
+file.info(pg_file)$size
+
+# Write the global evidence subset to a temporary file (MSstats expects file path)
+prot_evi_file <- file.path(tempdir(), "evidence_global.txt")
+fwrite(evidence_prot, prot_evi_file, sep = "\t", quote = FALSE, na = "NA")
+
+# Annotation file for MSstats (can be a file path)
+prot_annot_file <- file.path(tempdir(), "annotation_global.csv")
+fwrite(as.data.table(annot_prot[, c("Run", "Condition", "BioReplicate")]), prot_annot_file)
+
+# Convert global proteome evidence to MSstats format
+ms_prot <- MSstats::MaxQtoMSstatsFormat(
+  evidence = prot_evi_file,
+  annotation = prot_annot_file,
+  proteinGroups = pg_file,
+  useUniquePeptide = TRUE
+)
+
+head(ms_prot)
+```
+
+---
+  
+# 6. Construire un objet MSstatsPTM 
+  
+`MSstatsPTM` nécessite une liste de 2 éléments:
+  
+- `PTM`: table au niveau "PTM" 
+- `PROTEIN`: table au niveau "protéine" (global proteome)
+
+```{r}
+raw.input <- list(
+  PTM = ms_ptm$PTM,
+  PROTEIN = ms_prot
+)
+
+lapply(raw.input, head)
+```
+
+---
+  
+# 7. "Summarization" avec `dataSummarizationPTM`
+  
+Cette étape :
+
+- résume les signaux de PTM au niveau site de modification/peptide pour chaque run
+
+- résume l’abondance globale des protéines pour chaque run
+
+- gère les valeurs manquantes et la normalisation selon les paramètres par défaut (configurables)
+
+Elle peut prendre du temps suivant la taille du jeux de données.
+
+```{r, warning=FALSE, message=FALSE}
+sum.obj <- dataSummarizationPTM(
+  data = raw.input,
+  verbose = FALSE,
+  use_log_file = FALSE,
+  append = FALSE
+)
+
+head(sum.obj$PTM$ProteinLevelData)
+head(sum.obj$PROTEIN$ProteinLevelData)
+```
+
+---
+  
+# 8. "Quality Control" plots
+  
+## 8.1. QC boxplots
+```{r, warning=FALSE}
+dataProcessPlotsPTM(
+  sum.obj,
+  type = "QCPLOT",
+  which.PTM = "allonly",
+  address = FALSE
+)
+```
+
+## 8.2. Profile plot d’une protéine
+
+L’objectif du **Profile plot** est de visualiser la quantification d’une **protéine globale** à travers les runs (et donc les conditions), afin de :
+
+- vérifier la **cohérence des réplicats biologiques** (les points doivent être proches au sein d’une condition),
+
+- repérer d’éventuels **runs atypiques** (outliers),
+
+- observer si la protéine semble varier entre conditions (ce qui pourra ensuite impacter l’interprétation des PTMs).
+
+```{r, warning=FALSE}
+library(data.table)
+
+# 1) Les profile plots s'appuient sur FeatureLevelData (peptides/features).
+prot_feat <- as.data.table(sum.obj$PROTEIN$FeatureLevelData)
+
+# 2) Choisir une protéine qui a suffisamment de points mesurés pour faire un plot lisible
+#    (newABUNDANCE est la valeur log2 après traitement/normalisation, avec imputation éventuelle)
+one_prot <- prot_feat[!is.na(newABUNDANCE),
+                      .N, by = PROTEIN][order(-N)][1, PROTEIN]
+
+one_prot <- as.character(one_prot)
+one_prot
+
+# 3) Tracer le profile plot pour cette protéine
+dataProcessPlotsPTM(
+  sum.obj,
+  type = "ProfilePlot",
+  which.Protein = one_prot,
+  address = FALSE
+)
+```
+
+Interprétation rapide :
+- Les **points gris** représentent les mesures au niveau peptides/features (variabilité technique/peptidique).
+- La **courbe/points rouges** représentent la valeur résumée (abondance “protéine” par run).
+- Si les valeurs rouges diffèrent fortement entre conditions, cela indique un **changement global de la protéine** — ce qui est précisément la raison pour laquelle MSstatsPTM calcule ensuite un modèle **ADJUSTED** (PTM ajustée par la protéine).
+
+---
+  
+# 9. Analyse différentielle en utilisant `groupComparisonPTM`
+
+Nous allons comparer SARS_COV2 à mock **séparément pour chaque point temporel**.  
+Pour faire cela proprement, nous créons une étiquette de condition combinée, par exemple `mock_6h`, `SARS_COV2_6h`, etc.
+
+## 9.1. Ajouter des étiquettes de groupe combinées dans l’annotation des données résumées
+
+MSstatsPTM utilise les étiquettes présentes dans `ProteinLevelData`.  
+
+Nous allons modifier l’objet `sum.obj` :
+  
+```{r}
+# Create combined condition labels in PTM and PROTEIN summarization tables
+sum.obj2 <- sum.obj
+
+for (part in c("PTM", "PROTEIN")) {
+  dt <- as.data.table(sum.obj2[[part]]$ProteinLevelData)
+
+  dt[, Time := fifelse(grepl("_(ME|TE)_", originalRUN), "6h",
+                fifelse(grepl("_(ML|TL)_", originalRUN), "24h", NA_character_))]
+
+  dt[, GROUP := paste(GROUP, Time, sep = "_")]
+
+  sum.obj2[[part]]$ProteinLevelData <- dt
+}
+
+unique(sum.obj2$PTM$ProteinLevelData[, .(GROUP, Time)])
+unique(sum.obj2$PROTEIN$ProteinLevelData[, .(GROUP, Time)])
+
+# You should now see only:
+# "mock_6h", "mock_24h", "SARS_COV2_6h", "SARS_COV2_24h"
+```
+
+## 9.2. Définir une matrice de contrastes (groupes spécifiques au temps)
+
+À ce stade, nous avons modifié `sum.obj2` de sorte que la colonne GROUP contienne quatre niveaux :
+
+- `mock_6h`
+- `mock_24h`
+- `SARS_COV2_6h`
+- `SARS_COV2_24h`
+
+On peut maintenant créer des "contrastes" à tester :
+
+- `SARS_COV2_6h - mock_6h`
+- `SARS_COV2_24h - mock_24h`
+
+```{r}
+# List the groups available in the PROTEIN summarized table
+groups <- sort(unique(sum.obj2$PROTEIN$ProteinLevelData$GROUP))
+groups
+```
+
+```{r}
+# Create a 2-row contrast matrix:
+# 1) SARS_COV2_6h - mock_6h
+# 2) SARS_COV2_24h - mock_24h
+comparison <- matrix(0, nrow = 2, ncol = length(groups))
+colnames(comparison) <- groups
+rownames(comparison) <- c("SARS6h-mock6h", "SARS24h-mock24h")
+
+comparison["SARS6h-mock6h",  "mock_6h"]      <- -1
+comparison["SARS6h-mock6h",  "SARS_COV2_6h"] <-  1
+
+comparison["SARS24h-mock24h", "mock_24h"]       <- -1
+comparison["SARS24h-mock24h", "SARS_COV2_24h"]  <-  1
+
+comparison
+```
+
+---
+
+## 9.3. Run `groupComparisonPTM`
+
+Cette étape ajuste :
+
+- un modèle PTM sur les données de phosphorylation résumées,
+
+- un modèle protéine sur les données de protéomique globale résumées,
+
+- puis calcule les effets PTM ajustés par l’abondance de la protéine.
+
+```{r, warning=FALSE, message=FALSE}
+model.obj <- groupComparisonPTM(
+  sum.obj2,
+  data.type="LabelFree",
+  contrast.matrix = comparison,
+  use_log_file = FALSE,
+  append = FALSE,
+  verbose = FALSE
+)
+
+head(model.obj$PTM.Model)
+head(model.obj$PROTEIN.Model)
+head(model.obj$ADJUSTED.Model)
+```
+
+
+Après `groupComparisonPTM()`, MSstatsPTM retourne trois datasets:
+
+- `model.obj$PTM.Model` (unadjusted PTM changes)
+- `model.obj$PROTEIN.Model` (global protein changes)
+- `model.obj$ADJUSTED.Model` (effets PTM ajustés par l’abondance de la protéine)
+
+Une question très fréquente est : 
+
+> « Ce site de phosphorylation est significatif dans PTM.Model. Est-il toujours significatif après prise en compte des variations au niveau de la protéine ? »
+
+Ci-dessous, un petit bloc d’aide permet de sélectionner un site PTM et de comparer directement :
+
+- le log2FC PTM (non ajusté) vs le log2FC ajusté
+- les p-values correspondantes / p-values ajustées
+- ce que fait la protéine (variation globale)
+
+### 9.3.1. Choisir un site PTM d’intérêt
+Ici, nous sélectionnons le site le plus significatif après ajustement (p-value ajustée minimale) dans le premier contraste.
+
+```{r}
+# Look at available contrasts
+unique(model.obj$ADJUSTED.Model$Label)
+
+# Choose a contrast to interpret (first one by default)
+contrast_to_show <- unique(model.obj$ADJUSTED.Model$Label)[1]
+contrast_to_show
+
+adj_res <- as.data.table(model.obj$ADJUSTED.Model)[Label == contrast_to_show]
+
+# Pick a PTM site: most significant after adjustment (smallest adj.pvalue)
+site_to_show <- adj_res[order(adj.pvalue)][1, Protein]
+site_to_show
+```
+
+Remarque : dans les résultats de MSstatsPTM, l’identifiant du PTM est stocké dans la colonne `Protein` des tables PTM/ADJUSTED.  
+Il ressemble généralement à `Q6SPF0_S161` (accession de la protéine + site).
+
+### 9.3.2. PTM.Model vs ADJUSTED.Model vs PROTEIN.Model pour ce site
+
+```{r}
+ptm_res <- as.data.table(model.obj$PTM.Model)[Label == contrast_to_show & Protein == site_to_show]
+adj_res_one <- as.data.table(model.obj$ADJUSTED.Model)[Label == contrast_to_show & Protein == site_to_show]
+
+# Protein corresponding to the site: remove suffix after first "_" (works for typical "P12345_S67" format)
+# If your Protein IDs contain underscores for other reasons, adapt this parsing.
+base_protein <- sub("(_.*)$", "", site_to_show)
+base_protein
+
+prot_res <- as.data.table(model.obj$PROTEIN.Model)[Label == contrast_to_show & Protein == base_protein]
+
+list(
+  PTM = ptm_res,
+  ADJUSTED = adj_res_one,
+  PROTEIN = prot_res
+)
+```
+
+### 9.3.3. Table d'interprétation "compacte"
+Cette table contient les valeurs clés:
+
+- log2FC PTM (non ajusté)
+- log2FC de la protéine
+- log2FC ajusté (≈ PTM − protéine)
+- p-values ajustées
+
+```{r}
+interp <- data.table(
+  Contrast = contrast_to_show,
+  PTM_site = site_to_show,
+  Protein  = base_protein,
+  PTM_log2FC = ptm_res$log2FC,
+  Protein_log2FC = prot_res$log2FC,
+  Adjusted_log2FC = adj_res_one$log2FC,
+  PTM_adj_pvalue = ptm_res$adj.pvalue,
+  Adjusted_adj_pvalue = adj_res_one$adj.pvalue
+)
+
+interp
+```
+
+### 9.3.4. Comment expliquer le résultat 
+
+Utilisez cette logique :
+
+- Si le **log2FC PTM est élevé**, mais que le **log2FC de la protéine est aussi élevé dans la même direction**, alors la variation observée du PTM peut simplement refléter une variation d’abondance de la protéine.
+- Si le **log2FC ajusté reste élevé et significatif**, alors le PTM varie **au-delà** de l’abondance de la protéine (ce qui est plus interprétable biologiquement comme une régulation au niveau de la modification).
+- Si le **log2FC ajusté se rapproche de 0** (et/ou perd sa significativité), alors le signal PTM initial était probablement confondu avec les changements d’abondance de la protéine.
+
+---
+
+### Optionnel : afficher plusieurs sites à la fois (top 10 après ajustement)  
+C’est utile pour montrer que l’ajustement peut modifier l’ordre des « meilleurs hits » (top hits).
+
+```{r}
+top10 <- adj_res[order(adj.pvalue)][1:10, .(Protein, log2FC, adj.pvalue)]
+top10
+```
+
+---
+
+# 10. Visualisation des résultats (Volcano + Heatmap)
+
+## 10.1. Volcano plots
+Un volcano plot est généré pour les résultats PTM, PROTEIN et ADJUSTED (sous forme de panneaux).  
+- Axe X : log2 du fold change  
+- Axe Y : (généralement) \(-\log_{10}\) de la p-value ajustée (selon les paramètres)
+
+```{r, warning=FALSE}
+groupComparisonPlotsPTM(
+  data = model.obj,
+  type = "VolcanoPlot",
+  FCcutoff = 2,
+  logBase.pvalue = 2,
+  address = FALSE
+)
+```
+
+## 10.2. Heatmap
+Heatmap des PTMs les plus importants (ici les 30 premiers de la table de résultats).  
+Dans une analyse réelle, on sélectionne généralement les PTMs en fonction de leur p-value ajustée.
+
+```{r}
+groupComparisonPlotsPTM(
+  data = model.obj,
+  type = "Heatmap",
+  which.PTM = 1:30,
+  address = FALSE
+)
+```
+
+---
+
+# 11. Calcul de la taille d’échantillon
+
+Cette étape utilise la variabilité observée dans l’expérience actuelle pour estimer combien de réplicats biologiques seront nécessaires dans une future expérience afin de détecter des changements d’une amplitude donnée avec un FDR et une puissance statistique souhaités.
+
+```{r}
+ss <- designSampleSizePTM(
+  model.obj,
+  desiredFC = c(1.0, 1.5, 2.0),  # log2 fold changes of interest
+  FDR = 0.05,
+  numSample = TRUE,
+  power = 0.8
+)
+
+head(ss)
+
+MSstats::designSampleSizePlots(ss)
+```
+

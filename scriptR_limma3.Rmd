@@ -1,0 +1,869 @@
+---
+title: "Utiliser R et le package `limma` après une recherche MaxQuant pour l’analyse de PTM"
+author: "Ecole thématique CNRS 2026 - Sète"
+date: ""
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    number_sections: false
+    theme: united
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+# 1. Objectif du tutoriel
+
+Dans les études de modifications post-traductionnelles (PTM), comme la phosphorylation, une variation d’abondance observée pour un peptide modifié ne traduit pas nécessairement une régulation spécifique de la modification. Elle peut simplement refléter une variation d’abondance de la protéine à laquelle ce peptide appartient.
+
+L’objectif de ce tutoriel est de montrer comment construire, à partir de sorties MaxQuant, une analyse avec limma permettant de distinguer les variations globales de protéines des variations spécifiques au peptide modifié.
+
+Nous utilisons pour cela un jeu de données public disponible sur PRIDE (PXD020019), correspondant à une étude protéomique de cellules infectées par le SARS-CoV-2.
+
+Ce dataset contient :
+
+- des échantillons enrichis en phosphorylation ;
+
+- des échantillons enrichis en ubiquitination ;
+
+- des échantillons non enrichis pour la quantification protéique globale.
+
+Ici, nous nous concentrons sur l’analyse des phosphopeptides.
+
+# 2. Idée statistique
+
+Nous allons comparer, pour chaque peptide modifié, les intensités du phosphopeptide aux intensités de sa protéine d’appartenance.
+
+Au lieu d’analyser séparément chaque condition, nous allons construire un modèle global intégrant simultanément :
+
+- le **composant** : `PROT` ou `PTM` ;
+
+- la **condition** : `mock` ou `SARS_COV_2` ;
+
+- le **temps** : `6h` ou `24h`.
+
+Le modèle contient donc les interactions entre ces facteurs. Cela permet de tester plusieurs hypothèses biologiques.
+
+En particulier, le terme d'interaction `CompPTM:ConditionSARS_COV_2:Time24h` mesure si la variation du PTM entre `6h` et `24h`, relativement à sa protéine, est différente entre `mock` et `SARS_COV_2`.
+
+Tester la nullité du coefficient lié à cette interaction permet de répondre à la question:
+
+>"la dynamique temporelle du PTM relativement à la protéine dépend-elle de l’infection ?"
+
+# 3. Packages nécessaires
+
+## 3.1 Installation
+
+On installe les packages nécessaires si besoin. Ce n’est à exécuter qu’une seule fois par machine.
+
+```{r install, eval=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("limma")
+
+install.packages("data.table")
+install.packages("ggplot2")
+install.packages("reshape2")
+install.packages("stringi")
+install.packages("ggridges")
+```
+
+## 3.2 Chargement
+
+Nous chargeons ici les packages utilisés dans la session R.  
+Le package **limma** sert à ajuster les modèles linéaires et à tester les effets d’intérêt.  
+Le package **data.table** permet de lire rapidement les gros fichiers texte issus de MaxQuant, tandis que **ggplot2** et **reshape2** sont utilisés pour les visualisations.  
+
+```{r libraries}
+library(limma)
+library(data.table)
+library(ggplot2)
+library(reshape2)
+library(stringi)
+library(ggridges)
+```
+
+# 4. Import des sorties MaxQuant
+
+Nous téléchargeons directement depuis PRIDE les deux fichiers utilisés dans l’analyse :
+
+- `proteinGroups.txt` pour les protéines ;
+- `PhosphoSTYSites.txt` pour les peptides phosphorylés.
+
+Nous remplaçons ensuite les espaces par des points dans les noms de colonnes, afin de faciliter leur manipulation dans R.
+
+```{r import-data}
+data.prot <- fread("https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/proteinGroups.txt")
+data.ptm  <- fread("https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/PhosphoSTYSites.txt")
+
+setnames(data.prot, gsub(" ", ".", names(data.prot), fixed = TRUE))
+setnames(data.ptm,  gsub(" ", ".", names(data.ptm),  fixed = TRUE))
+```
+
+## 4.1 Inspection rapide
+
+Cette commande permet de vérifier rapidement la taille des deux jeux de données importés.  
+Elle renvoie le nombre de lignes et de colonnes, ce qui donne une première idée du volume de données disponible pour l’analyse.
+
+```{r inspect}
+dim(data.prot)
+dim(data.ptm)
+```
+
+Avant de filtrer ou de restructurer les données, il est utile d’inspecter les noms de colonnes.  
+Cela permet de repérer les variables d’annotation, les colonnes d’intensités, et de vérifier que les noms utilisés dans le code correspondent bien à ceux des fichiers MaxQuant.
+
+```{r inspect-columns, eval=FALSE}
+colnames(data.prot)
+colnames(data.ptm)
+```
+
+# 5. Préparation des données
+
+## 5.1 Filtrer les identifications non retenues
+
+Comme classiquement avec MaxQuant, nous retirons ici deux types d’identifications qui ne doivent généralement pas être conservées pour l’analyse statistique :
+
+- les entrées `Reverse`, utilisées pour estimer le taux de faux positifs ;
+- les `Potential contaminant`, correspondant à des contaminants connus.
+
+Ce filtrage est une étape standard de pré-traitement.
+
+```{r filter-identifications}
+data.ptm <- data.ptm[
+  which((data.ptm$Reverse != "+") & (data.ptm$Potential.contaminant != "+")),
+]
+```
+
+## 5.2 Filtrer les sites bien localisés
+
+Tous les peptides modifiés identifiés ne présentent pas nécessairement une localisation fiable de la modification.  
+Ici, nous conservons uniquement les sites pour lesquels la probabilité de localisation est supérieure à 0.75.  
+Cela permet de se concentrer sur des peptides modifiés dont l’interprétation biologique est fiable.
+
+```{r filter-localization}
+data.ptm <- data.ptm[which(data.ptm$Localization.prob > 0.75), ]
+```
+
+## 5.3 Construire la matrice PTM
+
+Nous extrayons ici la matrice d’intensités des phosphopeptides à partir des colonnes contenant `Intensity.Phospho`.  
+Dans les sorties MaxQuant, les zéros correspondent en pratique à des valeurs manquantes pour l’analyse quantitative ; nous les remplaçons donc par `NA`.  
+Enfin, nous convertissons toutes les colonnes en numérique afin de pouvoir appliquer les traitements statistiques ultérieurs.
+
+```{r build-ptm}
+int.ptm <- as.data.frame(data.ptm)[, grep("Intensity.Phospho", names(data.ptm))]
+int.ptm[int.ptm == 0] <- NA
+int.ptm <- as.data.frame(lapply(int.ptm, as.numeric))
+```
+
+### 5.3.1 Gérer les multiplicités
+
+Dans les sorties MaxQuant, les intensités correspondant à des peptides porteurs d’une, deux, ou trois ou plus modifications sont séparées par les suffixes :
+
+- `___1`
+- `___2`
+- `___3`
+
+Nous reconstruisons une matrice unique en empilant ces trois blocs de données.  
+Nous conservons en parallèle trois informations essentielles :
+
+- l’identifiant du peptide modifié ;
+- l’identifiant du groupe protéique ;
+- la multiplicité de modification.
+
+Cette restructuration est importante, car elle permet d’analyser ensuite chaque combinaison peptide x multiplicité comme une entité quantitative distincte.
+
+```{r multiplicity}
+mat1 <- int.ptm[, grep("___1", colnames(int.ptm))]
+mat2 <- int.ptm[, grep("___2", colnames(int.ptm))]
+mat3 <- int.ptm[, grep("___3", colnames(int.ptm))]
+
+colnames(mat1) <- gsub("___1", "", colnames(mat1))
+colnames(mat2) <- gsub("___2", "", colnames(mat2))
+colnames(mat3) <- gsub("___3", "", colnames(mat3))
+
+int.ptm.mod <- rbind(mat1, mat2, mat3)
+
+id.ptm <- rep(data.ptm$id, 3)
+id.pg  <- rep(data.ptm$Protein.group.IDs, 3)
+multiplicity <- c(
+  rep("___1", nrow(int.ptm)),
+  rep("___2", nrow(int.ptm)),
+  rep("___3", nrow(int.ptm))
+)
+```
+
+### 5.3.2 Retirer les lignes sans quantification
+
+Certaines lignes de la matrice PTM ne contiennent aucune intensité observée.  
+Ces lignes ne peuvent pas contribuer à l’analyse statistique et sont donc supprimées.  
+Nous appliquons le même filtrage aux vecteurs d’annotation associés afin de conserver la cohérence entre les données et leurs métadonnées.
+
+```{r remove-empty-ptm}
+sum_notna <- apply(int.ptm.mod, 1, function(x) sum(!is.na(x)))
+
+int.ptm.mod <- int.ptm.mod[which(sum_notna > 0), ]
+id.ptm <- id.ptm[which(sum_notna > 0)]
+id.pg <- id.pg[which(sum_notna > 0)]
+multiplicity <- multiplicity[which(sum_notna > 0)]
+```
+
+### 5.3.3 Renommer les colonnes
+
+Nous simplifions ici les noms de colonnes pour rendre les tableaux et graphiques plus lisibles.  
+Nous construisons ensuite un objet unique qui contient à la fois :
+
+- les identifiants du peptide modifié ;
+- les identifiants de protéines ;
+- la multiplicité ;
+- les intensités.
+
+Cet objet servira de base aux étapes d’appariement avec les protéines.
+
+```{r rename-ptm}
+short.name <- unlist(strsplit(colnames(int.ptm.mod), split = "Intensity.Phospho_"))
+short.name <- short.name[short.name != ""]
+colnames(int.ptm.mod) <- short.name
+
+data.ptm.mod <- data.frame(
+  id.ptm = id.ptm,
+  id.pg = id.pg,
+  multiplicity = multiplicity,
+  int.ptm.mod,
+  check.names = FALSE
+)
+
+head(data.ptm.mod[, 1:8])
+```
+
+## 5.4 Construire la matrice protéines
+
+Nous construisons ici la matrice d’intensités protéiques à partir de `proteinGroups.txt`.  
+Les colonnes correspondant aux fractions enrichies en PTM sont retirées, car nous voulons quantifier ici les protéines à partir des échantillons non enrichis.  
+Comme précédemment, les zéros sont remplacés par `NA`, puis les colonnes sont converties en numérique.  
+Nous ajoutons enfin l’identifiant de groupe protéique, qui sera utilisé pour l’appariement avec les peptides modifiés.
+
+```{r build-prot}
+int.prot <- as.data.frame(data.prot)[, grep("Intensity.", names(data.prot))]
+
+int.prot <- int.prot[, !names(int.prot) %in% grep("Phospho", names(int.prot), value = TRUE)]
+int.prot <- int.prot[, !names(int.prot) %in% grep("Ubi", names(int.prot), value = TRUE)]
+
+int.prot[int.prot == 0] <- NA
+int.prot <- as.data.frame(lapply(int.prot, as.numeric))
+
+data.prot.mod <- data.frame(
+  id.pg = data.prot$id,
+  int.prot,
+  check.names = FALSE
+)
+```
+
+# 6. Définir le plan expérimental
+
+D’après l’étude :
+
+- PTM : 12 colonnes = 2 conditions × 2 temps × 3 répétitions ;
+- protéines : 16 colonnes = 2 conditions × 2 temps × 4 répétitions.
+
+Cette étape est essentielle, car toute la modélisation statistique repose sur un bon codage du design expérimental.
+
+## 6.1 Design PTM
+
+Nous définissons ici, pour chaque colonne PTM :
+
+- la condition biologique ;
+- le temps ;
+- et leur combinaison.
+
+```{r design-ptm}
+Cond.ptm <- factor(c(rep("mock", 6), rep("SARS_COV_2", 6)),
+                   levels = c("mock", "SARS_COV_2"))
+
+Time.ptm <- factor(rep(c(rep("24h", 3), rep("6h", 3)), 2),
+                   levels = c("6h", "24h"))
+
+CondTime.ptm <- factor(paste(Cond.ptm, Time.ptm, sep = "_"))
+
+data.frame(
+  sample = colnames(int.ptm.mod),
+  condition = Cond.ptm,
+  time = Time.ptm,
+  group = CondTime.ptm
+)
+```
+
+## 6.2 Design protéines
+
+Nous faisons de même pour les colonnes protéiques.  
+Il est important de vérifier que l’ordre supposé des échantillons correspond bien à l’ordre des colonnes importées.
+
+```{r design-prot}
+Cond.prot <- factor(c(rep("mock", 8), rep("SARS_COV_2", 8)),
+                    levels = c("mock", "SARS_COV_2"))
+
+Time.prot <- factor(rep(c(rep("24h", 4), rep("6h", 4)), 2),
+                    levels = c("6h", "24h"))
+
+CondTime.prot <- factor(paste(Cond.prot, Time.prot, sep = "_"))
+
+data.frame(
+  sample = colnames(int.prot),
+  condition = Cond.prot,
+  time = Time.prot,
+  group = CondTime.prot
+)
+```
+
+# 7. Contrôle qualité rapide
+
+Avant de passer à la modélisation, il est important de vérifier rapidement que les données présentent une structure cohérente et qu’aucun échantillon ne semble aberrant.
+
+## 7.1 Transformation log2
+
+Les intensités des protéines sont généralement analysées après transformation logarithmique en base 2.  
+Cette transformation permet :
+
+- de réduire l’asymétrie des distributions ;
+- de stabiliser la variance des intensités;
+- d’interpréter plus facilement les différences comme des changements relatifs.
+
+C’est une étape standard avant l’application de modèles linéaires.
+
+```{r log2-transform}
+log2.int.ptm <- log2(as.matrix(int.ptm.mod))
+log2.int.prot <- log2(as.matrix(int.prot))
+```
+
+## 7.2 Distribution des intensités PTM
+
+Nous visualisons ici la distribution des intensités log2 des phosphopeptides, en nous limitant aux peptides observés dans tous les échantillons PTM.  
+L’objectif est de vérifier si les distributions sont globalement comparables entre échantillons.  
+De fortes différences de position ou de forme peuvent signaler un problème de normalisation ou un échantillon aberrant.
+
+```{r density-plot}
+
+# Calculer le nombre de valeurs observées sur chaque ligne
+sum_notna_ptm <- apply(log2.int.ptm, 1, function(x) sum(!is.na(x)))
+
+# Conserver les phosphopeptides observés dans tous les échantillons PTM
+log2.int.ptm.complete <- log2.int.ptm[sum_notna_ptm == ncol(log2.int.ptm), ]
+
+# Mise en forme en data.frame long
+df.ptm <- melt(log2.int.ptm.complete)
+colnames(df.ptm) <- c("Feature", "Sample", "log2Intensity")
+
+# Ordre d'affichage des échantillons
+df.ptm$Sample <- factor(df.ptm$Sample, levels = rev(colnames(log2.int.ptm.complete)))
+
+ggplot(df.ptm, aes(x = log2Intensity, y = Sample, fill = after_stat(x))) +
+  stat_density_ridges(
+    geom = "density_ridges_gradient",
+    scale = 3,
+    size = 0.3,
+    rel_min_height = 0.01,
+    quantile_lines = TRUE,
+    quantiles = 2,
+    alpha = 0.7
+  ) +
+  scale_fill_viridis_c(
+    name = "log2(int.)",
+    option = "C",
+    direction = -1
+  ) +
+  theme_ridges() +
+  labs(
+    title = "Distribution des intensités des phosphopeptides\nsans valeurs manquantes",
+    x = "log2(Intensity)",
+    y = "Échantillon"
+  )
+
+```
+
+## 7.3 Corrélation entre échantillons PTM
+
+Cette matrice de corrélation permet d’évaluer la similarité globale entre échantillons PTM.  
+Des corrélations élevées sont attendues entre répétitions biologiques d’une même condition.  
+Cette visualisation constitue un contrôle qualité simple pour détecter d’éventuels échantillons atypiques.
+
+```{r correlation-plot}
+cor.ptm <- cor(log2.int.ptm, use = "pairwise.complete.obs")
+
+heatmap(
+  cor.ptm,
+  symm = TRUE,
+  margins = c(8, 8),
+  main = "Corrélation entre échantillons PTM"
+)
+```
+
+# 8. Normalisation simple
+
+Une étape de normalisation est généralement nécessaire pour corriger les décalages globaux entre échantillons avant d’interpréter les différences biologiques.
+
+## 8.1 Fonction de normalisation par médiane
+
+Nous définissons ici une fonction de normalisation simple par centrage de la médiane au sein de chaque groupe biologique.  
+L’idée est de corriger des décalages globaux entre échantillons, tout en conservant la structure biologique de l’expérience.  
+
+```{r norm-function}
+median.norm <- function(intensities, condition){
+  int.norm <- intensities
+  lev <- levels(condition)
+  medianes <- rep(0, ncol(intensities))
+  
+  for (i in seq_along(lev)) {
+    col_cond <- which(condition == lev[i])
+    
+    nbna_cond <- apply(
+      intensities[, col_cond, drop = FALSE],
+      1,
+      function(x) sum(is.na(x))
+    )
+    
+    medianes[col_cond] <- apply(
+      intensities[which(nbna_cond == 0), col_cond, drop = FALSE],
+      2,
+      median,
+      na.rm = TRUE
+    )
+    
+    moy <- mean(medianes[col_cond], na.rm = TRUE)
+    
+    for (j in col_cond) {
+      int.norm[, j] <- intensities[, j] - medianes[j] + moy
+    }
+  }
+  
+  return(int.norm)
+}
+```
+
+## 8.2 Appliquer la normalisation
+
+Nous appliquons ici la fonction de normalisation aux données PTM et aux données protéiques.  
+À partir de cette étape, nous travaillons sur les intensités log2 normalisées.
+
+```{r apply-normalization}
+log2.int.ptm.norm  <- median.norm(log2.int.ptm,  CondTime.ptm)
+log2.int.prot.norm <- median.norm(log2.int.prot, CondTime.prot)
+```
+
+# 9. Apparier les PTM à leurs protéines
+
+La comparaison entre peptide modifié et protéine suppose un appariement explicite entre les deux niveaux d’information. C’est cette mise en correspondance qui permet ensuite de poser la bonne question statistique (c.à.d. bien définir la matrice de contraste à tester).
+
+## 9.1 Fonction d’appariement
+
+La colonne `Protein.group.IDs` de MaxQuant peut contenir plusieurs identifiants séparés par des points-virgules.  
+Nous définissons ici une fonction simple permettant de récupérer, pour chaque peptide modifié, le premier identifiant de groupe protéique qui correspond effectivement à une entrée du tableau `proteinGroups.txt`.
+
+```{r matching-function}
+prot_ids_available <- as.character(data.prot.mod$id.pg)
+
+extract_first_matching_pg <- function(pg_string, available_ids) {
+  ids <- unlist(strsplit(as.character(pg_string), ";", fixed = TRUE))
+  ids <- trimws(ids)
+  match_id <- ids[ids %in% available_ids]
+  if (length(match_id) == 0) return(NA)
+  match_id[1]
+}
+```
+
+## 9.2 Apparier les identifiants
+
+Nous appliquons la fonction d’appariement à tous les peptides modifiés.  
+Les peptides ne pouvant pas être reliés à une protéine quantifiée sont exclus de la suite de cette analyse.
+Cela garantit que toute comparaison PTM versus protéine repose sur un appariement explicite.
+On peut cependant garder ces peptides pour un examen ultérieur au besoin.
+
+```{r map-ptm-to-prot}
+mapped_pg <- sapply(
+  as.character(data.ptm.mod$id.pg),
+  extract_first_matching_pg,
+  available_ids = prot_ids_available
+)
+
+keep_map <- !is.na(mapped_pg)
+
+data.ptm.map <- data.ptm.mod[keep_map, ]
+mapped_pg <- mapped_pg[keep_map]
+log2.int.ptm.map <- log2.int.ptm.norm[keep_map, , drop = FALSE]
+```
+
+## 9.3 Extraire les profils protéiques associés
+
+Une fois l’identifiant protéique associé à chaque peptide modifié déterminé, nous extrayons les profils d’intensité de la protéine correspondante.  
+Nous construisons également une table d’annotation résumant :
+
+- l’identifiant du peptide modifié ;
+- l’identifiant protéique original ;
+- l’identifiant protéique effectivement apparié ;
+- la multiplicité.
+
+```{r map-protein-intensities}
+prot_index <- match(mapped_pg, as.character(data.prot.mod$id.pg))
+log2.int.prot.map <- log2.int.prot.norm[prot_index, , drop = FALSE]
+
+data.ptm.prot <- data.frame(
+  id.ptm = data.ptm.map$id.ptm,
+  id.pg.original = data.ptm.map$id.pg,
+  id.pg.mapped = mapped_pg,
+  multiplicity = data.ptm.map$multiplicity,
+  stringsAsFactors = FALSE
+)
+```
+
+# 10. Construire un modèle global PTM + protéine
+
+Nous disposons maintenant de tous les éléments nécessaires pour construire un modèle global intégrant simultanément le type de composant, la condition biologique et le temps.
+
+Nous allons maintenant empiler, pour chaque peptide modifié :
+
+- les 12 intensités PTM ;
+- les 16 intensités de la protéine associée.
+
+Cela donne, pour chaque peptide, un vecteur de longueur 28.
+
+## 10.1 Construire la matrice globale
+
+Nous construisons ici, pour chaque peptide modifié, un profil global contenant :
+
+- les intensités PTM ;
+
+- les intensités de la protéine associée.
+
+Chaque ligne de cette matrice correspond donc à un peptide modifié apparié à sa protéine, ce qui permet de modéliser explicitement les deux types de signaux dans un même cadre statistique.
+
+```{r build-global-matrix}
+global.mat <- t(sapply(seq_len(nrow(log2.int.ptm.map)), function(i) {
+  c(as.numeric(log2.int.ptm.map[i, ]),
+    as.numeric(log2.int.prot.map[i, ]))
+}))
+
+rownames(global.mat) <- paste0(data.ptm.prot$id.ptm, "_", data.ptm.prot$multiplicity)
+
+dim(global.mat)
+head(global.mat)
+```
+
+## 10.2 Définir les facteurs globaux
+
+Nous définissons maintenant les trois facteurs qui structurent l’analyse globale :
+
+- `Comp` : type de composant (`PROT` ou `PTM`) ;
+- `Condition` : `mock` ou `SARS_COV_2` ;
+- `Time` : `6h` ou `24h`.
+
+Ces facteurs décrivent chaque colonne de la matrice globale et serviront à construire la matrice de design du modèle linéaire.
+
+```{r global-factors}
+Comp <- factor(
+  c(rep("PTM", ncol(log2.int.ptm.map)),
+    rep("PROT", ncol(log2.int.prot.map))),
+  levels = c("PROT", "PTM")
+)
+
+Condition <- factor(
+  c(as.character(Cond.ptm), as.character(Cond.prot)),
+  levels = c("mock", "SARS_COV_2")
+)
+
+Time <- factor(
+  c(as.character(Time.ptm), as.character(Time.prot)),
+  levels = c("6h", "24h")
+)
+
+data.frame(
+  sample = c(colnames(log2.int.ptm.map), colnames(log2.int.prot.map)),
+  Comp = Comp,
+  Condition = Condition,
+  Time = Time
+)
+```
+
+## 10.3 Construire la matrice de design globale
+
+Nous construisons ici la matrice de design du modèle global.  
+La formule `~ Comp * Condition * Time` inclut :
+
+- les effets principaux ;
+- toutes les interactions à deux facteurs ;
+- l’interaction triple.
+
+L’inspection des noms de coefficients est importante, car elle permet d’identifier précisément le terme correspondant à l’hypothèse biologique que l’on souhaite tester.
+
+```{r global-design}
+design.global <- model.matrix(~ Comp * Condition * Time)
+
+design.global
+colnames(design.global)
+```
+
+## 10.4 Garder les profils complets
+
+Pour conserver une analyse simple et robuste dans ce tutoriel, nous ne gardons ici que les profils complets, c’est-à-dire sans valeurs manquantes sur l’ensemble du design global.  Cette étape réduit le nombre de peptides analysés, mais elle évite d’introduire ici une stratégie d’imputation qui alourdirait le tutoriel.
+
+```{r complete-global}
+keep_complete_global <- apply(global.mat, 1, function(x) sum(is.na(x)) == 0)
+
+global.mat.complete <- global.mat[keep_complete_global, , drop = FALSE]
+data.ptm.prot.complete <- data.ptm.prot[keep_complete_global, ]
+
+dim(global.mat.complete)
+```
+
+# 11. Ajuster le modèle limma global
+
+Nous ajustons maintenant le modèle linéaire avec `lmFit`, puis appliquons la modération bayésienne empirique avec `eBayes`.  
+Cette étape est au cœur de l’approche du package R `limma` : elle permet de stabiliser l’estimation des variances en partageant l’information entre peptides, ce qui améliore la robustesse des tests statistiques.
+
+```{r fit-global-model}
+fit.global <- lmFit(global.mat.complete, design.global)
+fit.global <- eBayes(fit.global, robust = TRUE)
+
+colnames(fit.global$coefficients)
+```
+
+# 12. Tester les effets biologiques d’intérêt
+
+## 12.1 Test principal : la dynamique temporelle du PTM relativement à la protéine dépend-elle de l’infection ?
+
+Nous extrayons ici les résultats permettant de répondre à la question biologique. Il faut tester si le paramètre associé à l’interaction triple  
+`CompPTM:ConditionSARS_COV_2:Time24h` est nul. S'il ne l'est pas, cela signifie que la réponse à la question posée est "oui".
+
+Ce terme teste si l’effet du temps sur le PTM relativement à la protéine dépend de la condition biologique.  
+C’est une façon rigoureuse de demander si l’infection par le SARS-CoV-2 modifie la dynamique temporelle du peptide phosphorylé relativement à sa protéine d’appartenance.
+
+Nous calculons également des p-values ajustées pour contrôler le taux de fausses découvertes.
+
+```{r triple-interaction}
+res.triple <- topTable(
+  fit.global,
+  coef = "CompPTM:ConditionSARS_COV_2:Time24h",
+  number = Inf,
+  sort.by = "P"
+)
+
+res.triple$adj.P.Val <- p.adjust(res.triple$P.Value, method = "BH")
+res.triple$Peptide <- rownames(res.triple)
+
+res.triple <- merge(
+  data.frame(
+    Peptide = rownames(global.mat.complete),
+    data.ptm.prot.complete,
+    stringsAsFactors = FALSE
+  ),
+  res.triple,
+  by = "Peptide",
+  all.x = TRUE
+)
+
+head(res.triple)
+```
+
+### 12.1.1 Nombre de peptides significatifs
+
+Cette commande donne le nombre de peptides pour lesquels l’interaction triple est significative au seuil de 5 % après correction pour tests multiples.  
+Cela fournit une première estimation du nombre de candidats potentiellement régulés spécifiquement au niveau PTM.
+
+```{r count-triple-significant}
+sum(res.triple$adj.P.Val < 0.05, na.rm = TRUE)
+```
+
+### 12.1.2 Top résultats
+
+Nous affichons ici les peptides les plus significatifs pour le test principal.  
+Les colonnes les plus importantes à interpréter sont :
+
+- `logFC` : taille et direction de l’effet estimé ;
+- `P.Value` : significativité brute ;
+- `adj.P.Val` : significativité après correction multiple.
+
+Ce tableau constitue généralement le point de départ de l’interprétation biologique.
+
+```{r top-triple-results}
+head(
+  res.triple[order(res.triple$adj.P.Val),
+             c("Peptide", "id.ptm", "id.pg.mapped", "multiplicity",
+               "logFC", "AveExpr", "P.Value", "adj.P.Val")],
+  20
+)
+```
+
+## 12.2 Test secondaire : interaction Comp × Time
+
+Ici, on cherche à identifier les peptides pour lesquels la dynamique temporelle diffère globalement de celle de la protéine, sans tenir compte spécifiquement du statut infecté ou non.
+
+```{r comp-time}
+res.comptime <- topTable(
+  fit.global,
+  coef = "CompPTM:Time24h",
+  number = Inf,
+  sort.by = "P"
+)
+
+res.comptime$adj.P.Val <- p.adjust(res.comptime$P.Value, method = "BH")
+sum(res.comptime$adj.P.Val < 0.05, na.rm = TRUE)
+```
+
+## 12.3 Test secondaire : interaction Comp × Condition
+
+Ce test porte sur l’interaction `Comp × Condition`, indépendamment du temps.  
+Il permet de détecter des différences entre PTM et protéine associée selon la condition biologique, mais sans modéliser ici leur évolution temporelle.
+
+```{r comp-condition}
+res.compcond <- topTable(
+  fit.global,
+  coef = "CompPTM:ConditionSARS_COV_2",
+  number = Inf,
+  sort.by = "P"
+)
+
+res.compcond$adj.P.Val <- p.adjust(res.compcond$P.Value, method = "BH")
+sum(res.compcond$adj.P.Val < 0.05, na.rm = TRUE)
+```
+
+# 13. Visualisation des résultats du test principal
+
+Les résultats statistiques doivent toujours être relus à la lumière du design expérimental et, si possible, visualisés sur quelques exemples représentatifs.
+
+## 13.1 Volcano plot
+
+Le volcano plot fournit une vue d’ensemble des résultats du test principal.  
+Il met en relation :
+
+- la taille de l’effet estimé (`logFC`) ;
+- la significativité statistique (`-log10(p-value)`).
+
+Les points colorés en rouge correspondent aux peptides significatifs après correction multiple.  
+Ce type de graphique permet de repérer rapidement les candidats les plus marqués.
+
+```{r volcano-triple}
+res.triple$Significant <- ifelse(res.triple$adj.P.Val < 0.05, "oui", "non")
+
+ggplot(res.triple, aes(x = logFC, y = -log10(P.Value), color = Significant)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("non" = "grey60", "oui" = "red")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano plot : interaction Comp × Condition × Time",
+    x = "Effet estimé (logFC)",
+    y = "-log10(p-value)"
+  )
+```
+
+## 13.2 Visualiser le profil d’un peptide significatif
+
+Nous sélectionnons ici automatiquement le peptide le plus significatif pour le test principal.  
+Cela permet d’illustrer concrètement, sur un exemple, ce que signifie une interaction triple significative.
+
+```{r select-top-triple}
+top_peptide <- res.triple$Peptide[which.min(res.triple$adj.P.Val)]
+top_peptide
+```
+
+Ce graphique montre le profil du peptide sélectionné, en comparant :
+
+- le signal PTM ;
+- le signal protéique ;
+
+dans les deux conditions et aux deux temps.
+
+L’objectif est de visualiser directement la structure que le modèle a détectée statistiquement.  
+Ce type de représentation est très utile pour interpréter biologiquement un résultat significatif.
+
+```{r plot-top-triple-profile}
+i_top <- which(rownames(global.mat.complete) == top_peptide)
+
+plot.df <- data.frame(
+  value = as.numeric(global.mat.complete[i_top, ]),
+  Comp = Comp,
+  Condition = Condition,
+  Time = Time
+)
+
+ggplot(plot.df, aes(x = Time, y = value, color = Comp, group = Comp)) +
+  geom_point(position = position_jitter(width = 0.05), size = 2) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  facet_wrap(~ Condition) +
+  theme_minimal() +
+  labs(
+    title = paste("Profil du peptide :", top_peptide),
+    x = "Temps",
+    y = "log2 intensité normalisée"
+  )
+```
+
+# 14. Interprétation du test principal
+
+Le coefficient `CompPTM:ConditionSARS_COV_2:Time24h` mesure une **interaction triple**.
+
+Il correspond à une logique de **différence de différences de différences** :
+
+- variation entre `24h` et `6h` ;
+
+- comparée entre `PTM` et `PROT` ;
+
+- puis comparée entre `SARS_COV_2` et `mock`.
+
+En pratique :
+
+- **si le coefficient est positif**, cela signifie que l’augmentation temporelle du PTM relativement à la protéine est plus forte en condition `SARS_COV_2` qu’en condition `mock` ;
+
+- **si le coefficient est négatif**, cela signifie que cette augmentation relative est plus faible, voire inversée.
+
+C’est donc un test particulièrement pertinent pour mettre en évidence une régulation de PTM dépendante de l’infection.
+
+# 15. Export des résultats
+
+On peut ensuite exporter les résultats dans des fichiers texte tabulés.  
+Cela facilite leur réutilisation pour :
+
+- une annotation biologique ;
+
+- un enrichissement fonctionnel ;
+
+- un partage avec d’autres collaborateurs ;
+
+- ou une visualisation dans un autre logiciel.
+
+```{r export-results, eval=FALSE}
+write.table(res.triple,
+            file = "resultats_limma_modele_global_interaction_triple.txt",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+write.table(res.comptime,
+            file = "resultats_limma_modele_global_comp_time.txt",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+write.table(res.compcond,
+            file = "resultats_limma_modele_global_comp_condition.txt",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+# 16. Conclusion
+
+À partir de sorties MaxQuant, nous avons effectué une analyse multifactorielle permettant d’identifier des peptides modifiés dont la dynamique diffère de celle de leur protéine d’appartenance.
+
+Le modèle global utilisé ici permet d’aller au-delà d’une simple comparaison par condition en testant directement si la relation entre PTM, protéine, temps et infection varie de manière significative.
+
+# 17. Références
+
+- Giai Gianetto Q. *Statistical Analysis of Post-Translational Modifications Quantified by Label-Free Proteomics Across Multiple Biological Conditions with R: Illustration from SARS-CoV-2 Infected Cells.* Methods in Molecular Biology, 2023.
+- Ritchie ME et al. *limma powers differential expression analyses for RNA-sequencing and microarray studies.* Nucleic Acids Research, 2015.
+- Tyanova S, Temu T, Cox J. *The MaxQuant computational platform for mass spectrometry-based shotgun proteomics.* Nature Protocols, 2016.
+
+

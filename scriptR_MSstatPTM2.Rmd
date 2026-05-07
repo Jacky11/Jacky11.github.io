@@ -1,15 +1,19 @@
 ---
-title: "Utiliser MSstatsPTM après une recherche MaxQuant"
-author: "Quentin Giai Gianetto"
+title: Utiliser R et le package `MSstatsPTM` après une recherche MaxQuant pour l’analyse
+  de PTM
+author: "Ecole thématique CNRS 2026 - Sète"
 date: ' '
 output:
   html_document:
-    toc: yes
-    toc_float: yes
+    toc: true
+    toc_float: true
     toc_depth: 4
-    number_sections: no
+    number_sections: false
     theme: united
     highlight: tango
+  pdf_document:
+    toc: true
+    toc_depth: '4'
 ---
 
 <!-- ```{r setup, include=FALSE} -->
@@ -47,12 +51,6 @@ library(MSstats)
 library(data.table)
 library(stringi)
 
-# knitr::opts_chunk$set(
-#   collapse = TRUE,
-#   comment = "#>",
-#   fig.width = 8,
-#   fig.height = 6
-# )
 ```
 
 ---
@@ -108,58 +106,93 @@ evidence_prot[, unique(Experiment)]
 ```
 
 ---
-  
-## 4.3. Construire la table "annotation" contenant le design expérimental
-  
-MSstats/MSstatsPTM nécessitent une table **annotation** qui contient le design expérimental de l'expérience :
-  
-- les noms des runs/échantillons (`Run`)
-- les noms des conditions biologiques (`Condition`)
-- les numéros/noms des réplicats biologiques au sein de chaque condition (`BioReplicate`)
 
-Dans notre cas, ces informations sont contenues dans la colonne `Experiment`:
+## 4.3 Construire la table d’annotation 
 
-- `Phospho_mock_6h_2` → Condition=mock, Time=6h, BioReplicate=2
-- `SARS_COV2_24h_4` → Condition=SARS_COV2, Time=24h, BioReplicate=4
+MSstats/MSstatsPTM ont besoin d’une table `annotation` qui indique, pour chaque run :
 
-Pour cela, nous allons utiliser un "regex" :
+- `Run` : nom du run (ici la colonne `Raw.file` de MaxQuant)
+- `Condition` : condition biologique (mock ou SARS_COV2)
+- `BioReplicate` : numéro de réplicat
+
+Dans ce dataset, ces informations sont codées dans la colonne `Experiment` (ex. `Phospho_mock_6h_2`).
+
+### 4.3.1 Créer une table “Run ↔ Experiment” (une ligne par run)
+
+```{r}
+library(data.table)
+library(stringi)
+
+# Exemple pour les runs PTM (phospho) :
+annot_ptm_dt <- unique(evidence_ptm[, .(Run = Raw.file, Experiment)], by = "Run")
+
+# Exemple pour les runs global proteome :
+annot_prot_dt <- unique(evidence_prot[, .(Run = Raw.file, Experiment)], by = "Run")
+
+head(annot_ptm_dt)
+head(annot_prot_dt)
+```
+
+Parce qu’un même run apparaît plusieurs fois dans `evidence.txt` (une ligne par peptide/feature), on utilise `unique(..., by="Run")`.  
+L’annotation doit contenir **une seule ligne par run**.
+
+---
+
+### 4.3.2 Extraire Condition / Time / BioReplicate depuis `Experiment`
+
+On utilise une expression régulière (regex) qui décrit la structure des noms :
+
+- préfixe optionnel : `Phospho_` ou `Ubi_`
+- condition : `mock` ou `SARS_COV2`
+- temps : `6h` ou `24h`
+- replicate : un chiffre
 
 ```{r}
 pat <- "^(?:(Ubi|Phospho)_)?(mock|SARS_COV2)_(6h|24h)_([0-9]+)$"
 ```
 
-Puis on créé une fonction qui va aller chercher les informations dans les noms des échantillons :
-```{r}
-make_annot <- function(ev) {
-  # One row per Raw.file (= Run)
-  annot_dt <- unique(ev[, .(Run = Raw.file, Experiment)], by = "Run")
-  
-  m <- stringi::stri_match_first_regex(annot_dt$Experiment, pat)
-  
-  annot_dt[, `:=`(
-    Enrichment   = fifelse(is.na(m[,2]), "Global", m[,2]),
-    Condition    = m[,3],
-    Time         = m[,4],
-    BioReplicate = as.integer(m[,5])
-  )]
-  
-  # If parsing fails, stop early (beginner-friendly)
-  if (nrow(annot_dt[is.na(Condition) | is.na(Time) | is.na(BioReplicate)]) > 0) {
-    print(annot_dt[is.na(Condition) | is.na(Time) | is.na(BioReplicate)])
-    stop("Some Experiment labels did not match the expected pattern.")
-  }
-  
-  # Return the minimal annotation needed by converters
-  as.data.frame(annot_dt[, .(Run, Condition, BioReplicate, Time, Enrichment)])
-}
+Puis on applique ce regex et on remplit les colonnes :
 
-annot_ptm  <- make_annot(evidence_ptm)
-annot_prot <- make_annot(evidence_prot)
+```{r}
+# --- PTM annotation ---
+m <- stringi::stri_match_first_regex(annot_ptm_dt$Experiment, pat)
+
+annot_ptm_dt[, Enrichment := fifelse(is.na(m[,2]), "Global", m[,2])]
+annot_ptm_dt[, Condition  := m[,3]]
+annot_ptm_dt[, Time       := m[,4]]
+annot_ptm_dt[, BioReplicate := as.integer(m[,5])]
+
+# Vérification rapide : est-ce que tout a été bien extrait ?
+head(annot_ptm_dt)
+```
+
+Même chose pour le global proteome :
+
+```{r}
+# --- PROTEIN (global) annotation ---
+m <- stringi::stri_match_first_regex(annot_prot_dt$Experiment, pat)
+
+annot_prot_dt[, Enrichment := fifelse(is.na(m[,2]), "Global", m[,2])]
+annot_prot_dt[, Condition  := m[,3]]
+annot_prot_dt[, Time       := m[,4]]
+annot_prot_dt[, BioReplicate := as.integer(m[,5])]
+
+head(annot_prot_dt)
+```
+
+---
+
+### 4.3.3 Garder uniquement les colonnes nécessaires
+Les converters utilisent surtout : `Run`, `Condition`, `BioReplicate`.
+
+```{r}
+annot_ptm  <- as.data.frame(annot_ptm_dt[, .(Run, Condition, BioReplicate)])
+annot_prot <- as.data.frame(annot_prot_dt[, .(Run, Condition, BioReplicate)])
 
 head(annot_ptm)
 head(annot_prot)
 
-# Quick check: how many runs?
+# Combien de runs ?
 nrow(annot_ptm)
 nrow(annot_prot)
 ```
@@ -169,9 +202,9 @@ nrow(annot_prot)
 ## 4.4. Préparer le fichier FASTA (Human + SARS-CoV-2)
 
 Certaines sorties de MaxQuant ne fournissent pas directement la position du site de PTM dans la *protéine*.  
-MSstatsPTM peut utiliser un fichier FASTA pour associer les peptides modifiés à leurs positions de site dans la séquence protéique.
+`MSstatsPTM` peut utiliser un fichier FASTA pour associer les peptides modifiés à leurs positions de site dans la séquence protéique.
 
-Nous téléchargeons et fusionnons deux fichiers FASTA, puis nous les enregistrons localement.
+Nous téléchargeons et fusionnons deux fichiers FASTA (humain et sars-cov-2), puis nous les enregistrons localement.
 
 ```{r}
 fasta_human_url <- "https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/uniprot-9606_proteome_human_reviewed_canonical_isoforms_191008.fasta"
@@ -290,7 +323,7 @@ Cette étape :
 
 Elle peut prendre du temps suivant la taille du jeux de données.
 
-```{r, warning=FALSE, message=FALSE}
+```{r, echo=TRUE, results='hide',warning=FALSE}
 sum.obj <- dataSummarizationPTM(
   data = raw.input,
   verbose = FALSE,
@@ -350,9 +383,12 @@ dataProcessPlotsPTM(
 ```
 
 Interprétation rapide :
+
 - Les **points gris** représentent les mesures au niveau peptides/features (variabilité technique/peptidique).
+
 - La **courbe/points rouges** représentent la valeur résumée (abondance “protéine” par run).
-- Si les valeurs rouges diffèrent fortement entre conditions, cela indique un **changement global de la protéine** — ce qui est précisément la raison pour laquelle MSstatsPTM calcule ensuite un modèle **ADJUSTED** (PTM ajustée par la protéine).
+
+- Si les valeurs rouges diffèrent fortement entre conditions, cela indique un **changement global de la protéine**, ce qui est précisément la raison pour laquelle MSstatsPTM calcule ensuite un modèle **ADJUSTED** (PTM ajustée par la protéine).
 
 ---
   
@@ -438,7 +474,7 @@ Cette étape ajuste :
 
 - puis calcule les effets PTM ajustés par l’abondance de la protéine.
 
-```{r, warning=FALSE, message=FALSE}
+```{r, echo=TRUE, results='hide', warning=FALSE}
 model.obj <- groupComparisonPTM(
   sum.obj2,
   data.type="LabelFree",
@@ -489,7 +525,6 @@ site_to_show
 ```
 
 Remarque : dans les résultats de MSstatsPTM, l’identifiant du PTM est stocké dans la colonne `Protein` des tables PTM/ADJUSTED.  
-Il ressemble généralement à `Q6SPF0_S161` (accession de la protéine + site).
 
 ### 9.3.2. PTM.Model vs ADJUSTED.Model vs PROTEIN.Model pour ce site
 
@@ -572,8 +607,8 @@ groupComparisonPlotsPTM(
 ```
 
 ## 10.2. Heatmap
-Heatmap des PTMs les plus importants (ici les 30 premiers de la table de résultats).  
-Dans une analyse réelle, on sélectionne généralement les PTMs en fonction de leur p-value ajustée.
+
+Affiche les 30 premières PTMs:
 
 ```{r}
 groupComparisonPlotsPTM(
@@ -586,9 +621,9 @@ groupComparisonPlotsPTM(
 
 ---
 
-# 11. Calcul de la taille d’échantillon
+# 11. Calcul du nombre d'échantillons nécessaires
 
-Cette étape utilise la variabilité observée dans l’expérience actuelle pour estimer combien de réplicats biologiques seront nécessaires dans une future expérience afin de détecter des changements d’une amplitude donnée avec un FDR et une puissance statistique souhaités.
+Cette étape utilise la variabilité observée dans l’expérience actuelle pour estimer combien de réplicats biologiques seront nécessaires dans une future expérience afin de détecter des changements d’une amplitude donnée avec un FDR et une puissance statistique souhaités. Idéalement, cette étude est à effectuer sur des données "test".
 
 ```{r}
 ss <- designSampleSizePTM(
@@ -603,4 +638,9 @@ head(ss)
 
 MSstats::designSampleSizePlots(ss)
 ```
+
+# 12. Références
+
+- Kohler et al. *MSstatsPTM: Statistical Relative Quantification of Posttranslational Modifications in Bottom-Up Mass Spectrometry-Based Proteomics.* Molecular and cellular proteomics, 2023.
+- Kohler et al. *MSstats Version 4.0: Statistical Analyses of Quantitative Mass Spectrometry-Based Proteomic Experiments with Chromatography-Based Quantification at Scale.* Journal of proteome research, 2023.
 

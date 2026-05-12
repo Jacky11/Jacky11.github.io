@@ -23,11 +23,21 @@ MSstatsPTM adresse ce problème en produisant trois modèles:
   
 - **PTM.Model**: analyse différentielle du peptide modifié ("unadjusted")
 - **PROTEIN.Model**: analyse différentielle de la protéine d'appartenance ("unmodified proteome")
-- **ADJUSTED.Model**: variations de PTM ajustées par rapport aux variations de la protéine ("*PTM change* − *protein change*")
+- **ADJUSTED.Model**: variations de PTM ajustées par rapport aux variations de la protéine ("*PTM change* - *protein change*")
 
 Nous allons utiliser un dataset public disponible sur PRIDE (**PXD020019**). C'est une analyse protéomique de cellules infectées par le SARS-COV-2 basée sur le logiciel MaxQuant. Il contient des échantillons enrichis en phosphorylation, d'autres en ubiquitination, et des échantillons non-enrichis.
 
 # 2. Installation et chargement des packages R nécessaires
+
+On installe les packages nécessaires si besoin. Ce n’est à exécuter qu’une seule fois par machine.
+
+Voici ce que fait chaque package: 
+
+-   BiocManager  : permet d'installer les packages dispo sur Bioconductor (packages uniquement bioinformatiques). Il est conseillé d'installer la dernière version disponible.
+-   MSstats      : permet d'effectuer des analyses différentielles "classiques" 
+-   MSstatsPTM   : extension de MSstats pour l'analyse de PTMs
+-   data.table   : lecture rapide de gros jeux de données (fread)
+-   stringi      : permet de faire de la manipulation de chaines de caractères 
 
 ```{r, eval=FALSE}
 
@@ -51,16 +61,25 @@ library(stringi)
 ---
   
 # 3. Téléchargement et inspection du fichier "evidence" de MaxQuant:
+
+MaxQuant fournit un fichier appelé "evidence.txt" qui contient une ligne par peptide identifié dans un échantillon.
+Ce fichier peut être volumineux. Son import dans la session R peut prendre du temps.
   
 ```{r}
-# This evidence.txt is large (~580 MB). Download may take time.
+# L'import du fichier evidence peut prendre un certain temps
 evidence <- fread("https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/evidence.txt")
 
-# MaxQuant columns sometimes contain spaces; MSstats converters often work better with dots.
+# Les colonnes du fichier contiennent parfois des espaces 
+# Il faut les convertirs en "." pour faciliter l'utilisation de MSstats.
+# gsub() remplace tous les espaces par des points dans les noms de colonne.
 setnames(evidence, gsub(" ", ".", names(evidence), fixed = TRUE))
 
-# Quick sanity check: key columns
+# On peut vérifier les 5 premières lignes du fichier importé pour être sûr qu'on
+# a bien importé les données. Ici, on n'affiche que les colonnes "Raw file", "Experiment"
+# et "Fraction"
 evidence[1:5, .(Raw.file, Experiment, Fraction)]
+
+#On affiche que les valeurs "Fraction" (utile pour comprendre le design de l'xp)
 unique(evidence$Fraction)
 ```
 # 4. Préparation des inputs pour l'analyse
@@ -69,9 +88,12 @@ unique(evidence$Fraction)
 
 Dans ce dataset,dans la colonne `Experiment`, on a:
   
-  - Global proteome runs: `mock_6h_1`, `SARS_COV2_24h_4`, ...
+- Global proteome runs: `mock_6h_1`, `SARS_COV2_24h_4`, ...
 - Phospho-enriched runs: `Phospho_mock_6h_1`, ...
 - Ubi-enriched runs: `Ubi_mock_6h_1`, ...
+
+Cette commande compte le nombre de lignes par "Experiment".
+[order(-N)] permet de les afficher par ordre décroissant.
 
 ```{r}
 evidence[, .N, by = Experiment][order(-N)][1:30]
@@ -87,6 +109,8 @@ Pour pouvoir utiliser correctement les fonctions de *MSstatsPTM*, il faut créer
 - `evidence_ptm`: seulement les échantillons enrichis en phosphorylation 
 - `evidence_prot`: seulement les échantillons de protéomique global (sans enrichissement)
 
+La fonction grepl() retourne "TRUE" ou "FALSE" pour chaque ligne si le pattern recherché est trouvé.
+
 ```{r}
 is_phospho <- grepl("^Phospho_", evidence$Experiment)
 is_ubi     <- grepl("^Ubi_", evidence$Experiment)
@@ -95,7 +119,8 @@ is_global  <- !is_phospho & !is_ubi
 evidence_ptm  <- evidence[is_phospho]
 evidence_prot <- evidence[is_global]
 
-# Check the experiments we kept
+# On vérifie que tout est ok en listant les "experiment" uniques dans chaque jeu 
+# de données
 evidence_ptm[, unique(Experiment)]
 evidence_prot[, unique(Experiment)]
 ```
@@ -104,20 +129,20 @@ evidence_prot[, unique(Experiment)]
   
 ## 4.3 Construire la table d’annotation 
   
-  MSstats/MSstatsPTM ont besoin d’une table `annotation` qui indique, pour chaque run :
+MSstats/MSstatsPTM ont besoin d’une table `annotation` qui indique, pour chaque run :
   
-  - `Run` : nom du run (ici la colonne `Raw.file` de MaxQuant)
+- `Run` : nom du run (ici la colonne `Raw.file` de MaxQuant)
 - `Condition` : condition biologique (mock ou SARS_COV2)
 - `BioReplicate` : numéro de réplicat
 
 Dans ce dataset, ces informations sont codées dans la colonne `Experiment` (ex. `Phospho_mock_6h_2`).
 
-### 4.3.1 Créer une table “Run ↔ Experiment” (une ligne par run)
+### 4.3.1 Créer une table “Run <-> Experiment” (une ligne par run)
+
+Parce qu’un même run apparaît plusieurs fois dans `evidence.txt` (une ligne par peptide/feature), on utilise `unique(..., by="Run")`.  
+L’annotation doit contenir **une seule ligne par run**.
 
 ```{r}
-library(data.table)
-library(stringi)
-
 # Exemple pour les runs PTM (phospho) :
 annot_ptm_dt <- unique(evidence_ptm[, .(Run = Raw.file, Experiment)], by = "Run")
 
@@ -128,19 +153,18 @@ head(annot_ptm_dt)
 head(annot_prot_dt)
 ```
 
-Parce qu’un même run apparaît plusieurs fois dans `evidence.txt` (une ligne par peptide/feature), on utilise `unique(..., by="Run")`.  
-L’annotation doit contenir **une seule ligne par run**.
-
 ---
   
 ### 4.3.2 Extraire Condition / Time / BioReplicate depuis `Experiment`
   
-  On utilise une expression régulière (regex) qui décrit la structure des noms :
+On utilise une expression régulière (regex) qui décrit la structure des noms :
   
-  - préfixe optionnel : `Phospho_` ou `Ubi_`
+- préfixe optionnel : `Phospho_` ou `Ubi_`
 - condition : `mock` ou `SARS_COV2`
 - temps : `6h` ou `24h`
 - replicate : un chiffre
+
+La syntaxe regex peut apparaître complexe, mais vous avez seulement besoin de comprendre ce que chaque colonne contiendra après cette étape.
 
 ```{r}
 pat <- "^(?:(Ubi|Phospho)_)?(mock|SARS_COV2)_(6h|24h)_([0-9]+)$"
@@ -149,13 +173,15 @@ pat <- "^(?:(Ubi|Phospho)_)?(mock|SARS_COV2)_(6h|24h)_([0-9]+)$"
 Puis on applique ce regex et on remplit les colonnes :
   
 ```{r}
-# --- PTM annotation ---
+# Application aux annotations PTM
 m <- stringi::stri_match_first_regex(annot_ptm_dt$Experiment, pat)
 
+#fifelse est une version rapide de ifelse (package data.table)
+# si m[,2] est manquant (NA), alors c'est un échantillon de protéomique globale ("Global")
 annot_ptm_dt[, Enrichment := fifelse(is.na(m[,2]), "Global", m[,2])]
-annot_ptm_dt[, Condition  := m[,3]]
-annot_ptm_dt[, Time       := m[,4]]
-annot_ptm_dt[, BioReplicate := as.integer(m[,5])]
+annot_ptm_dt[, Condition  := m[,3]]  #"mock" ou "SARS_COV2"
+annot_ptm_dt[, Time       := m[,4]]  # "6h" ou "24h"
+annot_ptm_dt[, BioReplicate := as.integer(m[,5])] #numéro de réplicat
 
 # Vérification rapide : est-ce que tout a été bien extrait ?
 head(annot_ptm_dt)
@@ -164,7 +190,7 @@ head(annot_ptm_dt)
 Même chose pour le global proteome :
   
 ```{r}
-# --- PROTEIN (global) annotation ---
+# Application aux annotations PROTEIN (global)
 m <- stringi::stri_match_first_regex(annot_prot_dt$Experiment, pat)
 
 annot_prot_dt[, Enrichment := fifelse(is.na(m[,2]), "Global", m[,2])]
@@ -178,7 +204,7 @@ head(annot_prot_dt)
 ---
   
 ### 4.3.3 Garder uniquement les colonnes nécessaires
-Les converters utilisent surtout : `Run`, `Condition`, `BioReplicate`.
+Les converters de MSstats/MSstatsPTM utilisent surtout : `Run`, `Condition`, `BioReplicate`.
 
 ```{r}
 annot_ptm  <- as.data.frame(annot_ptm_dt[, .(Run, Condition, BioReplicate)])
@@ -199,7 +225,7 @@ nrow(annot_prot)
 Certaines sorties de MaxQuant ne fournissent pas directement la position du site de PTM dans la *protéine*.  
 `MSstatsPTM` peut utiliser un fichier FASTA pour associer les peptides modifiés à leurs positions de site dans la séquence protéique.
 
-Nous téléchargeons et fusionnons deux fichiers FASTA (humain et sars-cov-2), puis nous les enregistrons localement.
+Pour cela, nous téléchargeons et fusionnons deux fichiers FASTA (humain et sars-cov-2), puis nous les enregistrons localement.
 
 ```{r}
 fasta_human_url <- "https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/uniprot-9606_proteome_human_reviewed_canonical_isoforms_191008.fasta"
@@ -210,12 +236,14 @@ fasta_sars  <- fread(fasta_sars_url,  header = FALSE)
 
 fasta_all <- rbind(fasta_human, fasta_sars)
 
-# Use a temp file for portability (works on any machine)
+# tempdir() retourne un fichier temporaire
+# On sauve le fichier FASTA fusionné dans ce fichier temporaire
 fasta_path <- file.path(tempdir(), "proteins_human_plus_sarscov2.fasta")
 writeLines(fasta_all$V1, con = fasta_path)
 
-# Show a FASTA header example
+# Affiche la première ligne du fichier FASTA
 fasta_all$V1[1]
+# Affiche le chemin vers le fichier FASTA
 fasta_path
 ```
 
@@ -224,19 +252,25 @@ fasta_path
 # 5. Convertir le fichier "evidence" de MaxQuant en un input "MSstatsPTM"
   
 ## 5.1. Runs enrichis en phosphorylation
-  
+
+MaxQtoMSstatsPTMFormat() lit le fichier "evidence" de MaxQuant et le reformatte
+en la structure que MSstatsPTM attends pour une analyse au niveau PTM.
+
 Paramètres clés :
   
-- `mod_id` : motif (pattern) permettant d’identifier les modifications de phosphorylation dans les chaînes de caractères de MaxQuant.
-
+- `mod_id` : motif (pattern regex) permettant d’identifier les modifications de phosphorylation dans les chaînes de caractères de MaxQuant.
 - `use_unmod_peptides = FALSE` : puisqu'il s’agit d’un fichier *evidence* issu d’un enrichissement en phosphopeptides, nous ne voulons donc pas inférer ici l’abondance globale des protéines.
+- `labeling_type` : "LF" = Label-Free quantification.
+- `fasta_protein_name`  : permet l'extraction du code Uniprot à partir du fasta
+
+Cette fonction peut prendre du temps.
 
 ```{r}
 ms_ptm <- MaxQtoMSstatsPTMFormat(
   evidence = evidence_ptm,
   annotation = annot_ptm[, c("Run", "Condition", "BioReplicate")],
   fasta = fasta_path,
-  fasta_protein_name = "uniprot_ac",         # FASTA headers like >sp|Q9HBI6|... (accession = Q9HBI6)
+  fasta_protein_name = "uniprot_ac",  #FASTA headers du type >sp|Q9HBI6|... (accession = Q9HBI6)
   mod_id = "\\(Phospho \\(STY\\)\\)",
   use_unmod_peptides = FALSE,
   labeling_type = "LF",
@@ -261,21 +295,23 @@ Pour le protéome global, nous allons utiliser le package R `MSstats` et les fic
 On télécharge `proteinGroups.txt` depuis PRIDE, on créé ensuite le fichier evidence "global", le fichier "annotation" correspondant puis on le convertit au format MSstats.
 
 ```{r}
-# Download proteinGroups.txt (needed by MSstats MaxQuant converter)
+# Téléchargement de proteinGroups.txt (requis pour le converter de MaxQuant à MSstats)
 pg_url <- "https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/proteinGroups.txt"
 pg_file <- file.path(tempdir(), "proteinGroups.txt")
 download.file(pg_url, destfile = pg_file, mode = "wb")
 file.info(pg_file)$size
 
-# Write the global evidence subset to a temporary file (MSstats expects file path)
+# Ecris le fichier "evidence" global dans un fichier temporaire
 prot_evi_file <- file.path(tempdir(), "evidence_global.txt")
 fwrite(evidence_prot, prot_evi_file, sep = "\t", quote = FALSE, na = "NA")
 
-# Annotation file for MSstats (can be a file path)
+# Fichier annotation pour MSstats (ça peut être un chemin vers le fichier)
 prot_annot_file <- file.path(tempdir(), "annotation_global.csv")
 fwrite(as.data.table(annot_prot[, c("Run", "Condition", "BioReplicate")]), prot_annot_file)
 
-# Convert global proteome evidence to MSstats format
+# Converti le fichier evidence du proteome global au format MSstats
+# useUniquePeptide = TRUE : on ne garde que les peptides qui "mappent" sur une 
+# seule protéine (pas de peptides partagés).
 ms_prot <- MSstats::MaxQtoMSstatsFormat(
   evidence = prot_evi_file,
   annotation = prot_annot_file,
@@ -283,6 +319,7 @@ ms_prot <- MSstats::MaxQtoMSstatsFormat(
   useUniquePeptide = TRUE
 )
 
+#On vérifie le fichier créé
 head(ms_prot)
 ```
 
@@ -295,18 +332,24 @@ head(ms_prot)
 - `PTM`: table au niveau "PTM" 
 - `PROTEIN`: table au niveau "protéine" (global proteome)
 
+Les deux fichiers sont séparés car ils viennent de différents échantillons (enrichis et non-enrichis).
+MSstatsPTM les alignera par protéine ID.
+
 ```{r}
 raw.input <- list(
   PTM = ms_ptm$PTM,
   PROTEIN = ms_prot
 )
 
+#Affichage des premières lignes des deux fichiers
 lapply(raw.input, head)
 ```
 
 ---
   
 # 7. "Summarization" avec `dataSummarizationPTM`
+
+Les données contiennent des mesures multiples par protéine et par échantillon (états de charge, etc.)
   
 Cette étape :
 
@@ -316,7 +359,7 @@ Cette étape :
 
 - gère les valeurs manquantes et la normalisation selon les paramètres par défaut (configurables)
 
-Elle peut prendre du temps suivant la taille du jeux de données.
+C'est l'étape qui prend le plus de temps (suivant la taille du jeux de données).
 
 ```{r, echo=TRUE, results='hide',warning=FALSE}
 sum.obj <- dataSummarizationPTM(
@@ -326,6 +369,8 @@ sum.obj <- dataSummarizationPTM(
   append = FALSE
 )
 
+# On affiche les premières lignes au niveau protéine pour les PTM et le protéome 
+# global
 head(sum.obj$PTM$ProteinLevelData)
 head(sum.obj$PROTEIN$ProteinLevelData)
 ```
@@ -399,8 +444,16 @@ MSstatsPTM utilise les étiquettes présentes dans `ProteinLevelData`.
 Nous allons modifier l’objet `sum.obj` :
   
 ```{r}
-# Create combined condition labels in PTM and PROTEIN summarization tables
+# On fait une copie pour conserver l'objet original
 sum.obj2 <- sum.obj
+
+# La colonne GROUP contient "mock" ou "SARS_COV2".
+# On veut "mock_6h", "mock_24h", "SARS_COV2_6h", "SARS_COV2_24h".
+#
+# Le point de temps est encodé dans le nom de l'échantillon:
+#   "_ME_" or "_TE_" = early time point (6h)
+#   "_ML_" or "_TL_" = late time point (24h)
+# On détecte ces patterns dans la colonne originalRUN en utilisant grepl().
 
 for (part in c("PTM", "PROTEIN")) {
   dt <- as.data.table(sum.obj2[[part]]$ProteinLevelData)
@@ -416,11 +469,46 @@ for (part in c("PTM", "PROTEIN")) {
 unique(sum.obj2$PTM$ProteinLevelData[, .(GROUP, Time)])
 unique(sum.obj2$PROTEIN$ProteinLevelData[, .(GROUP, Time)])
 
-# You should now see only:
+# On doit avoir:
 # "mock_6h", "mock_24h", "SARS_COV2_6h", "SARS_COV2_24h"
 ```
 
-## 9.2. Définir une matrice de contrastes (groupes spécifiques au temps)
+## 9.2 Rappel sur les matrices de "design" et de "contraste"
+
+Un modèle de régression linéaire peut s'écrire comme:
+$$Y=XB+\epsilon$$
+où $Y$ est un vecteur contenant les intensités des protéines/peptides dans différents échantillons, $B$ est un vecteur de paramètres, $\epsilon$ est un bruit blanc Gaussien, et $X$ est la matrice de **design**. 
+
+Cette dernière définit le modèle qui sera utilisé pour modéliser les intensités des protéines/peptides.
+
+Par exemple, dans un cas simple "contrôle vs mutant" avec 3 réplicats dans chaque condition, le modèle linéaire sera:
+$$\begin{bmatrix} y_{1}\\
+y_{2}\\
+y_{3}\\
+y_{4}\\
+y_{5}\\
+y_{6}
+\end{bmatrix}=\begin{bmatrix}1 & 0\\
+1 & 0\\
+1 & 0\\
+1 & 1\\
+1 & 1\\
+1 & 1
+\end{bmatrix}\begin{bmatrix}\alpha \\ \beta\end{bmatrix}+\epsilon$$
+
+Lorqu'on utilise un test statistique, on s'intéresse à tester si des paramètres de ce modèle sont nuls (ou une combinaison linéaire de ces paramètres).
+
+Par exemple, dans le cas "contrôle vs mutant" précédent, on s'intéresse à tester la nullité du paramètre $\beta$.
+
+Ceci peut être formulé comme une multiplication entre une matrice de "contraste" et le vecteur de paramètres, c.-à-d. qu'on veut tester si:
+$$\begin{bmatrix}0 & 1
+\end{bmatrix}\begin{bmatrix}\alpha \\ \beta\end{bmatrix}=0 \Leftrightarrow \beta=0$$
+
+Plus généralement, le test statistique peut s'exprimer comme:
+$$H_0: C^tB=0\qquad  vs\qquad H_1: C^tB\neq0$$
+où $C$ est définie comme la matrice de **contraste**.
+
+## 9.3. Définir une matrice de contrastes (groupes spécifiques au temps)
 
 À ce stade, nous avons modifié `sum.obj2` de sorte que la colonne GROUP contienne quatre niveaux :
   
@@ -441,7 +529,7 @@ groups
 ```
 
 ```{r}
-# Create a 2-row contrast matrix:
+# On créé une matrice de contraste de deux lignes:
 # 1) SARS_COV2_6h - mock_6h
 # 2) SARS_COV2_24h - mock_24h
 comparison <- matrix(0, nrow = 2, ncol = length(groups))
@@ -454,14 +542,15 @@ comparison["SARS6h-mock6h",  "SARS_COV2_6h"] <-  1
 comparison["SARS24h-mock24h", "mock_24h"]       <- -1
 comparison["SARS24h-mock24h", "SARS_COV2_24h"]  <-  1
 
+#Affichage pour vérifier que c'est correct
 comparison
 ```
 
 ---
   
-## 9.3. Run `groupComparisonPTM`
+## 9.4. Run `groupComparisonPTM`
   
-Cette étape ajuste :
+Cette étape statistique est le point essentiel. Elle estime trois modèles :
   
 - un modèle PTM sur les données de phosphorylation résumées,
 
@@ -479,9 +568,9 @@ model.obj <- groupComparisonPTM(
   verbose = FALSE
 )
 
-head(model.obj$PTM.Model)
-head(model.obj$PROTEIN.Model)
-head(model.obj$ADJUSTED.Model)
+head(model.obj$PTM.Model) #Modèle PTM "non ajusté" 
+head(model.obj$PROTEIN.Model) #Modèle protéines
+head(model.obj$ADJUSTED.Model) # Modèle PTM ajusté par rapport aux protéines
 ```
 
 
@@ -493,7 +582,7 @@ Après `groupComparisonPTM()`, MSstatsPTM retourne trois datasets:
 
 Une question très fréquente est : 
   
-> « Ce site de phosphorylation est significatif dans PTM.Model. Est-il toujours significatif après prise en compte des variations au niveau de la protéine ? »
+> "Ce site de phosphorylation est significatif dans PTM.Model. Est-il toujours significatif après prise en compte des variations au niveau de la protéine ?"
 
 Ci-dessous, un petit bloc d’aide permet de sélectionner un site PTM et de comparer directement :
   
@@ -501,34 +590,38 @@ Ci-dessous, un petit bloc d’aide permet de sélectionner un site PTM et de com
 - les p-values correspondantes / p-values ajustées
 - ce que fait la protéine (variation globale)
 
-### 9.3.1. Choisir un site PTM d’intérêt
+### 9.4.1. Choisir un site PTM d’intérêt
 Ici, nous sélectionnons le site le plus significatif après ajustement (p-value ajustée minimale) dans le premier contraste.
 
 ```{r}
-# Look at available contrasts
+# Contrastes disponibles
 unique(model.obj$ADJUSTED.Model$Label)
 
-# Choose a contrast to interpret (first one by default)
+# On choisi un contraste
 contrast_to_show <- unique(model.obj$ADJUSTED.Model$Label)[1]
 contrast_to_show
 
 adj_res <- as.data.table(model.obj$ADJUSTED.Model)[Label == contrast_to_show]
 
-# Pick a PTM site: most significant after adjustment (smallest adj.pvalue)
+# PTM le plus significatif après ajustement (plus petite adj.pvalue)
 site_to_show <- adj_res[order(adj.pvalue)][1, Protein]
 site_to_show
 ```
 
 Remarque : dans les résultats de MSstatsPTM, l’identifiant du PTM est stocké dans la colonne `Protein` des tables PTM/ADJUSTED.  
 
-### 9.3.2. PTM.Model vs ADJUSTED.Model vs PROTEIN.Model pour ce site
+### 9.4.2. PTM.Model vs ADJUSTED.Model vs PROTEIN.Model pour ce site
+
+On cherche à savoir si le changement d'abondance du PTM est dû au changement 
+d'abondance de la protéine ou s'il y a un changement qui est dû à la modification
 
 ```{r}
+
 ptm_res <- as.data.table(model.obj$PTM.Model)[Label == contrast_to_show & Protein == site_to_show]
 adj_res_one <- as.data.table(model.obj$ADJUSTED.Model)[Label == contrast_to_show & Protein == site_to_show]
 
-# Protein corresponding to the site: remove suffix after first "_" (works for typical "P12345_S67" format)
-# If your Protein IDs contain underscores for other reasons, adapt this parsing.
+# Le numéro d'accession de la protéine est inclu dans l'ID du PTM (ex: "P12345_S67")
+# On utilise la fonction sub() pour extraire cet ID
 base_protein <- sub("(_.*)$", "", site_to_show)
 base_protein
 
@@ -541,12 +634,12 @@ list(
 )
 ```
 
-### 9.3.3. Table d'interprétation "compacte"
+### 9.4.3. Table d'interprétation "compacte"
 Cette table contient les valeurs clés:
   
 - log2FC PTM (non ajusté)
 - log2FC de la protéine
-- log2FC ajusté (≈ PTM − protéine)
+- log2FC ajusté (= PTM - protéine)
 - p-values ajustées
 
 ```{r}
@@ -564,7 +657,7 @@ interp <- data.table(
 interp
 ```
 
-### 9.3.4. Comment expliquer le résultat 
+### 9.4.4. Comment expliquer le résultat 
 
 Utilisez cette logique :
   
@@ -574,8 +667,8 @@ Utilisez cette logique :
 
 ---
   
-  ### Optionnel : afficher plusieurs sites à la fois (top 10 après ajustement)  
-  C’est utile pour montrer que l’ajustement peut modifier l’ordre des « meilleurs hits » (top hits).
+Optionnel : afficher plusieurs sites à la fois (top 10 après ajustement)  
+C’est utile pour montrer que l’ajustement peut modifier l’ordre des « meilleurs hits » (top hits).
 
 ```{r}
 top10 <- adj_res[order(adj.pvalue)][1:10, .(Protein, log2FC, adj.pvalue)]

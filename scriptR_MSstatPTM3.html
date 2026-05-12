@@ -1579,7 +1579,7 @@ modifié (“unadjusted”)</li>
 <li><strong>PROTEIN.Model</strong>: analyse différentielle de la
 protéine d’appartenance (“unmodified proteome”)</li>
 <li><strong>ADJUSTED.Model</strong>: variations de PTM ajustées par
-rapport aux variations de la protéine (“<em>PTM change</em> −
+rapport aux variations de la protéine (“<em>PTM change</em> -
 <em>protein change</em>”)</li>
 </ul>
 <p>Nous allons utiliser un dataset public disponible sur PRIDE
@@ -1590,6 +1590,20 @@ ubiquitination, et des échantillons non-enrichis.</p>
 </div>
 <div id="installation-et-chargement-des-packages-r-nécessaires" class="section level1">
 <h1>2. Installation et chargement des packages R nécessaires</h1>
+<p>On installe les packages nécessaires si besoin. Ce n’est à exécuter
+qu’une seule fois par machine.</p>
+<p>Voici ce que fait chaque package:</p>
+<ul>
+<li>BiocManager : permet d’installer les packages dispo sur Bioconductor
+(packages uniquement bioinformatiques). Il est conseillé d’installer la
+dernière version disponible.</li>
+<li>MSstats : permet d’effectuer des analyses différentielles
+“classiques”</li>
+<li>MSstatsPTM : extension de MSstats pour l’analyse de PTMs</li>
+<li>data.table : lecture rapide de gros jeux de données (fread)</li>
+<li>stringi : permet de faire de la manipulation de chaines de
+caractères</li>
+</ul>
 <div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">require</span>(<span class="st">&quot;BiocManager&quot;</span>, <span class="at">quietly =</span> <span class="cn">TRUE</span>))</span>
 <span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a>    <span class="fu">install.packages</span>(<span class="st">&quot;BiocManager&quot;</span>)</span>
 <span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a></span>
@@ -1606,14 +1620,21 @@ ubiquitination, et des échantillons non-enrichis.</p>
 <div id="téléchargement-et-inspection-du-fichier-evidence-de-maxquant" class="section level1">
 <h1>3. Téléchargement et inspection du fichier “evidence” de
 MaxQuant:</h1>
-<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="co"># This evidence.txt is large (~580 MB). Download may take time.</span></span>
+<p>MaxQuant fournit un fichier appelé “evidence.txt” qui contient une
+ligne par peptide identifié dans un échantillon. Ce fichier peut être
+volumineux. Son import dans la session R peut prendre du temps.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="co"># L&#39;import du fichier evidence peut prendre un certain temps</span></span>
 <span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>evidence <span class="ot">&lt;-</span> <span class="fu">fread</span>(<span class="st">&quot;https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/evidence.txt&quot;</span>)</span>
 <span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a></span>
-<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co"># MaxQuant columns sometimes contain spaces; MSstats converters often work better with dots.</span></span>
-<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="fu">setnames</span>(evidence, <span class="fu">gsub</span>(<span class="st">&quot; &quot;</span>, <span class="st">&quot;.&quot;</span>, <span class="fu">names</span>(evidence), <span class="at">fixed =</span> <span class="cn">TRUE</span>))</span>
-<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a></span>
-<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co"># Quick sanity check: key columns</span></span>
-<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a>evidence[<span class="dv">1</span><span class="sc">:</span><span class="dv">5</span>, .(Raw.file, Experiment, Fraction)]</span></code></pre></div>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co"># Les colonnes du fichier contiennent parfois des espaces </span></span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co"># Il faut les convertirs en &quot;.&quot; pour faciliter l&#39;utilisation de MSstats.</span></span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co"># gsub() remplace tous les espaces par des points dans les noms de colonne.</span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="fu">setnames</span>(evidence, <span class="fu">gsub</span>(<span class="st">&quot; &quot;</span>, <span class="st">&quot;.&quot;</span>, <span class="fu">names</span>(evidence), <span class="at">fixed =</span> <span class="cn">TRUE</span>))</span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a></span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co"># On peut vérifier les 5 premières lignes du fichier importé pour être sûr qu&#39;on</span></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co"># a bien importé les données. Ici, on n&#39;affiche que les colonnes &quot;Raw file&quot;, &quot;Experiment&quot;</span></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co"># et &quot;Fraction&quot;</span></span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a>evidence[<span class="dv">1</span><span class="sc">:</span><span class="dv">5</span>, .(Raw.file, Experiment, Fraction)]</span></code></pre></div>
 <pre><code>##                               Raw.file      Experiment Fraction
 ##                                 &lt;char&gt;          &lt;char&gt;    &lt;int&gt;
 ## 1: 20200421_QX7_OzKa_SA_COV2_FPMS_ME_3       mock_6h_3        1
@@ -1621,7 +1642,8 @@ MaxQuant:</h1>
 ## 3: 20200421_QX7_OzKa_SA_COV2_FPMS_ML_3      mock_24h_3        1
 ## 4: 20200421_QX7_OzKa_SA_COV2_FPMS_TE_2  SARS_COV2_6h_2        1
 ## 5: 20200421_QX7_OzKa_SA_COV2_FPMS_TL_2 SARS_COV2_24h_2        1</code></pre>
-<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">unique</span>(evidence<span class="sc">$</span>Fraction)</span></code></pre></div>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="co">#On affiche que les valeurs &quot;Fraction&quot; (utile pour comprendre le design de l&#39;xp)</span></span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="fu">unique</span>(evidence<span class="sc">$</span>Fraction)</span></code></pre></div>
 <pre><code>## [1]  1 21 11</code></pre>
 </div>
 <div id="préparation-des-inputs-pour-lanalyse" class="section level1">
@@ -1636,6 +1658,8 @@ en PTM.</h2>
 <li>Phospho-enriched runs: <code>Phospho_mock_6h_1</code>, …</li>
 <li>Ubi-enriched runs: <code>Ubi_mock_6h_1</code>, …</li>
 </ul>
+<p>Cette commande compte le nombre de lignes par “Experiment”.
+[order(-N)] permet de les afficher par ordre décroissant.</p>
 <div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a>evidence[, .N, by <span class="ot">=</span> Experiment][<span class="fu">order</span>(<span class="sc">-</span>N)][<span class="dv">1</span><span class="sc">:</span><span class="dv">30</span>]</span></code></pre></div>
 <pre><code>##              Experiment     N
 ##                  &lt;char&gt; &lt;int&gt;
@@ -1685,6 +1709,8 @@ phosphorylation</li>
 <li><code>evidence_prot</code>: seulement les échantillons de
 protéomique global (sans enrichissement)</li>
 </ul>
+<p>La fonction grepl() retourne “TRUE” ou “FALSE” pour chaque ligne si
+le pattern recherché est trouvé.</p>
 <div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a>is_phospho <span class="ot">&lt;-</span> <span class="fu">grepl</span>(<span class="st">&quot;^Phospho_&quot;</span>, evidence<span class="sc">$</span>Experiment)</span>
 <span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>is_ubi     <span class="ot">&lt;-</span> <span class="fu">grepl</span>(<span class="st">&quot;^Ubi_&quot;</span>, evidence<span class="sc">$</span>Experiment)</span>
 <span id="cb9-3"><a href="#cb9-3" tabindex="-1"></a>is_global  <span class="ot">&lt;-</span> <span class="sc">!</span>is_phospho <span class="sc">&amp;</span> <span class="sc">!</span>is_ubi</span>
@@ -1692,8 +1718,9 @@ protéomique global (sans enrichissement)</li>
 <span id="cb9-5"><a href="#cb9-5" tabindex="-1"></a>evidence_ptm  <span class="ot">&lt;-</span> evidence[is_phospho]</span>
 <span id="cb9-6"><a href="#cb9-6" tabindex="-1"></a>evidence_prot <span class="ot">&lt;-</span> evidence[is_global]</span>
 <span id="cb9-7"><a href="#cb9-7" tabindex="-1"></a></span>
-<span id="cb9-8"><a href="#cb9-8" tabindex="-1"></a><span class="co"># Check the experiments we kept</span></span>
-<span id="cb9-9"><a href="#cb9-9" tabindex="-1"></a>evidence_ptm[, <span class="fu">unique</span>(Experiment)]</span></code></pre></div>
+<span id="cb9-8"><a href="#cb9-8" tabindex="-1"></a><span class="co"># On vérifie que tout est ok en listant les &quot;experiment&quot; uniques dans chaque jeu </span></span>
+<span id="cb9-9"><a href="#cb9-9" tabindex="-1"></a><span class="co"># de données</span></span>
+<span id="cb9-10"><a href="#cb9-10" tabindex="-1"></a>evidence_ptm[, <span class="fu">unique</span>(Experiment)]</span></code></pre></div>
 <pre><code>##  [1] &quot;Phospho_mock_6h_2&quot;       &quot;Phospho_mock_6h_3&quot;      
 ##  [3] &quot;Phospho_mock_24h_1&quot;      &quot;Phospho_mock_24h_2&quot;     
 ##  [5] &quot;Phospho_mock_24h_3&quot;      &quot;Phospho_SARS_COV2_6h_1&quot; 
@@ -1720,18 +1747,20 @@ SARS_COV2)</li>
 </ul>
 <p>Dans ce dataset, ces informations sont codées dans la colonne
 <code>Experiment</code> (ex. <code>Phospho_mock_6h_2</code>).</p>
-<div id="créer-une-table-run-experiment-une-ligne-par-run" class="section level3">
-<h3>4.3.1 Créer une table “Run ↔︎ Experiment” (une ligne par run)</h3>
-<div class="sourceCode" id="cb13"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a><span class="fu">library</span>(data.table)</span>
-<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a><span class="fu">library</span>(stringi)</span>
+<div id="créer-une-table-run---experiment-une-ligne-par-run" class="section level3">
+<h3>4.3.1 Créer une table “Run &lt;-&gt; Experiment” (une ligne par
+run)</h3>
+<p>Parce qu’un même run apparaît plusieurs fois dans
+<code>evidence.txt</code> (une ligne par peptide/feature), on utilise
+<code>unique(..., by=&quot;Run&quot;)</code>.<br />
+L’annotation doit contenir <strong>une seule ligne par run</strong>.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a><span class="co"># Exemple pour les runs PTM (phospho) :</span></span>
+<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a>annot_ptm_dt <span class="ot">&lt;-</span> <span class="fu">unique</span>(evidence_ptm[, .(<span class="at">Run =</span> Raw.file, Experiment)], <span class="at">by =</span> <span class="st">&quot;Run&quot;</span>)</span>
 <span id="cb13-3"><a href="#cb13-3" tabindex="-1"></a></span>
-<span id="cb13-4"><a href="#cb13-4" tabindex="-1"></a><span class="co"># Exemple pour les runs PTM (phospho) :</span></span>
-<span id="cb13-5"><a href="#cb13-5" tabindex="-1"></a>annot_ptm_dt <span class="ot">&lt;-</span> <span class="fu">unique</span>(evidence_ptm[, .(<span class="at">Run =</span> Raw.file, Experiment)], <span class="at">by =</span> <span class="st">&quot;Run&quot;</span>)</span>
+<span id="cb13-4"><a href="#cb13-4" tabindex="-1"></a><span class="co"># Exemple pour les runs global proteome :</span></span>
+<span id="cb13-5"><a href="#cb13-5" tabindex="-1"></a>annot_prot_dt <span class="ot">&lt;-</span> <span class="fu">unique</span>(evidence_prot[, .(<span class="at">Run =</span> Raw.file, Experiment)], <span class="at">by =</span> <span class="st">&quot;Run&quot;</span>)</span>
 <span id="cb13-6"><a href="#cb13-6" tabindex="-1"></a></span>
-<span id="cb13-7"><a href="#cb13-7" tabindex="-1"></a><span class="co"># Exemple pour les runs global proteome :</span></span>
-<span id="cb13-8"><a href="#cb13-8" tabindex="-1"></a>annot_prot_dt <span class="ot">&lt;-</span> <span class="fu">unique</span>(evidence_prot[, .(<span class="at">Run =</span> Raw.file, Experiment)], <span class="at">by =</span> <span class="st">&quot;Run&quot;</span>)</span>
-<span id="cb13-9"><a href="#cb13-9" tabindex="-1"></a></span>
-<span id="cb13-10"><a href="#cb13-10" tabindex="-1"></a><span class="fu">head</span>(annot_ptm_dt)</span></code></pre></div>
+<span id="cb13-7"><a href="#cb13-7" tabindex="-1"></a><span class="fu">head</span>(annot_ptm_dt)</span></code></pre></div>
 <pre><code>##                                        Run             Experiment
 ##                                     &lt;char&gt;                 &lt;char&gt;
 ## 1: 20200425_QX8_OzKa_SA_COV2_EasyPhos_ME_2      Phospho_mock_6h_2
@@ -1749,10 +1778,6 @@ SARS_COV2)</li>
 ## 4: 20200421_QX7_OzKa_SA_COV2_FPMS_TE_2  SARS_COV2_6h_2
 ## 5: 20200421_QX7_OzKa_SA_COV2_FPMS_TL_2 SARS_COV2_24h_2
 ## 6: 20200421_QX7_OzKa_SA_COV2_FPMS_TL_3 SARS_COV2_24h_3</code></pre>
-<p>Parce qu’un même run apparaît plusieurs fois dans
-<code>evidence.txt</code> (une ligne par peptide/feature), on utilise
-<code>unique(..., by=&quot;Run&quot;)</code>.<br />
-L’annotation doit contenir <strong>une seule ligne par run</strong>.</p>
 <hr />
 </div>
 <div id="extraire-condition-time-bioreplicate-depuis-experiment" class="section level3">
@@ -1766,18 +1791,23 @@ des noms :</p>
 <li>temps : <code>6h</code> ou <code>24h</code></li>
 <li>replicate : un chiffre</li>
 </ul>
+<p>La syntaxe regex peut apparaître complexe, mais vous avez seulement
+besoin de comprendre ce que chaque colonne contiendra après cette
+étape.</p>
 <div class="sourceCode" id="cb17"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" tabindex="-1"></a>pat <span class="ot">&lt;-</span> <span class="st">&quot;^(?:(Ubi|Phospho)_)?(mock|SARS_COV2)_(6h|24h)_([0-9]+)$&quot;</span></span></code></pre></div>
 <p>Puis on applique ce regex et on remplit les colonnes :</p>
-<div class="sourceCode" id="cb18"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" tabindex="-1"></a><span class="co"># --- PTM annotation ---</span></span>
+<div class="sourceCode" id="cb18"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" tabindex="-1"></a><span class="co"># Application aux annotations PTM</span></span>
 <span id="cb18-2"><a href="#cb18-2" tabindex="-1"></a>m <span class="ot">&lt;-</span> stringi<span class="sc">::</span><span class="fu">stri_match_first_regex</span>(annot_ptm_dt<span class="sc">$</span>Experiment, pat)</span>
 <span id="cb18-3"><a href="#cb18-3" tabindex="-1"></a></span>
-<span id="cb18-4"><a href="#cb18-4" tabindex="-1"></a>annot_ptm_dt[, Enrichment <span class="sc">:=</span> <span class="fu">fifelse</span>(<span class="fu">is.na</span>(m[,<span class="dv">2</span>]), <span class="st">&quot;Global&quot;</span>, m[,<span class="dv">2</span>])]</span>
-<span id="cb18-5"><a href="#cb18-5" tabindex="-1"></a>annot_ptm_dt[, Condition  <span class="sc">:=</span> m[,<span class="dv">3</span>]]</span>
-<span id="cb18-6"><a href="#cb18-6" tabindex="-1"></a>annot_ptm_dt[, Time       <span class="sc">:=</span> m[,<span class="dv">4</span>]]</span>
-<span id="cb18-7"><a href="#cb18-7" tabindex="-1"></a>annot_ptm_dt[, BioReplicate <span class="sc">:=</span> <span class="fu">as.integer</span>(m[,<span class="dv">5</span>])]</span>
-<span id="cb18-8"><a href="#cb18-8" tabindex="-1"></a></span>
-<span id="cb18-9"><a href="#cb18-9" tabindex="-1"></a><span class="co"># Vérification rapide : est-ce que tout a été bien extrait ?</span></span>
-<span id="cb18-10"><a href="#cb18-10" tabindex="-1"></a><span class="fu">head</span>(annot_ptm_dt)</span></code></pre></div>
+<span id="cb18-4"><a href="#cb18-4" tabindex="-1"></a><span class="co">#fifelse est une version rapide de ifelse (package data.table)</span></span>
+<span id="cb18-5"><a href="#cb18-5" tabindex="-1"></a><span class="co"># si m[,2] est manquant (NA), alors c&#39;est un échantillon de protéomique globale (&quot;Global&quot;)</span></span>
+<span id="cb18-6"><a href="#cb18-6" tabindex="-1"></a>annot_ptm_dt[, Enrichment <span class="sc">:=</span> <span class="fu">fifelse</span>(<span class="fu">is.na</span>(m[,<span class="dv">2</span>]), <span class="st">&quot;Global&quot;</span>, m[,<span class="dv">2</span>])]</span>
+<span id="cb18-7"><a href="#cb18-7" tabindex="-1"></a>annot_ptm_dt[, Condition  <span class="sc">:=</span> m[,<span class="dv">3</span>]]  <span class="co">#&quot;mock&quot; ou &quot;SARS_COV2&quot;</span></span>
+<span id="cb18-8"><a href="#cb18-8" tabindex="-1"></a>annot_ptm_dt[, Time       <span class="sc">:=</span> m[,<span class="dv">4</span>]]  <span class="co"># &quot;6h&quot; ou &quot;24h&quot;</span></span>
+<span id="cb18-9"><a href="#cb18-9" tabindex="-1"></a>annot_ptm_dt[, BioReplicate <span class="sc">:=</span> <span class="fu">as.integer</span>(m[,<span class="dv">5</span>])] <span class="co">#numéro de réplicat</span></span>
+<span id="cb18-10"><a href="#cb18-10" tabindex="-1"></a></span>
+<span id="cb18-11"><a href="#cb18-11" tabindex="-1"></a><span class="co"># Vérification rapide : est-ce que tout a été bien extrait ?</span></span>
+<span id="cb18-12"><a href="#cb18-12" tabindex="-1"></a><span class="fu">head</span>(annot_ptm_dt)</span></code></pre></div>
 <pre><code>##                                        Run             Experiment Enrichment
 ##                                     &lt;char&gt;                 &lt;char&gt;     &lt;char&gt;
 ## 1: 20200425_QX8_OzKa_SA_COV2_EasyPhos_ME_2      Phospho_mock_6h_2    Phospho
@@ -1795,7 +1825,7 @@ des noms :</p>
 ## 5:      mock    24h            3
 ## 6: SARS_COV2     6h            1</code></pre>
 <p>Même chose pour le global proteome :</p>
-<div class="sourceCode" id="cb20"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb20-1"><a href="#cb20-1" tabindex="-1"></a><span class="co"># --- PROTEIN (global) annotation ---</span></span>
+<div class="sourceCode" id="cb20"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb20-1"><a href="#cb20-1" tabindex="-1"></a><span class="co"># Application aux annotations PROTEIN (global)</span></span>
 <span id="cb20-2"><a href="#cb20-2" tabindex="-1"></a>m <span class="ot">&lt;-</span> stringi<span class="sc">::</span><span class="fu">stri_match_first_regex</span>(annot_prot_dt<span class="sc">$</span>Experiment, pat)</span>
 <span id="cb20-3"><a href="#cb20-3" tabindex="-1"></a></span>
 <span id="cb20-4"><a href="#cb20-4" tabindex="-1"></a>annot_prot_dt[, Enrichment <span class="sc">:=</span> <span class="fu">fifelse</span>(<span class="fu">is.na</span>(m[,<span class="dv">2</span>]), <span class="st">&quot;Global&quot;</span>, m[,<span class="dv">2</span>])]</span>
@@ -1824,8 +1854,8 @@ des noms :</p>
 </div>
 <div id="garder-uniquement-les-colonnes-nécessaires" class="section level3">
 <h3>4.3.3 Garder uniquement les colonnes nécessaires</h3>
-<p>Les converters utilisent surtout : <code>Run</code>,
-<code>Condition</code>, <code>BioReplicate</code>.</p>
+<p>Les converters de MSstats/MSstatsPTM utilisent surtout :
+<code>Run</code>, <code>Condition</code>, <code>BioReplicate</code>.</p>
 <div class="sourceCode" id="cb22"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb22-1"><a href="#cb22-1" tabindex="-1"></a>annot_ptm  <span class="ot">&lt;-</span> <span class="fu">as.data.frame</span>(annot_ptm_dt[, .(Run, Condition, BioReplicate)])</span>
 <span id="cb22-2"><a href="#cb22-2" tabindex="-1"></a>annot_prot <span class="ot">&lt;-</span> <span class="fu">as.data.frame</span>(annot_prot_dt[, .(Run, Condition, BioReplicate)])</span>
 <span id="cb22-3"><a href="#cb22-3" tabindex="-1"></a></span>
@@ -1860,8 +1890,8 @@ position du site de PTM dans la <em>protéine</em>.<br />
 <code>MSstatsPTM</code> peut utiliser un fichier FASTA pour associer les
 peptides modifiés à leurs positions de site dans la séquence
 protéique.</p>
-<p>Nous téléchargeons et fusionnons deux fichiers FASTA (humain et
-sars-cov-2), puis nous les enregistrons localement.</p>
+<p>Pour cela, nous téléchargeons et fusionnons deux fichiers FASTA
+(humain et sars-cov-2), puis nous les enregistrons localement.</p>
 <div class="sourceCode" id="cb30"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb30-1"><a href="#cb30-1" tabindex="-1"></a>fasta_human_url <span class="ot">&lt;-</span> <span class="st">&quot;https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/uniprot-9606_proteome_human_reviewed_canonical_isoforms_191008.fasta&quot;</span></span>
 <span id="cb30-2"><a href="#cb30-2" tabindex="-1"></a>fasta_sars_url  <span class="ot">&lt;-</span> <span class="st">&quot;https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/20200531_fasta_sars-cov-2.fasta&quot;</span></span>
 <span id="cb30-3"><a href="#cb30-3" tabindex="-1"></a></span>
@@ -1870,15 +1900,17 @@ sars-cov-2), puis nous les enregistrons localement.</p>
 <span id="cb30-6"><a href="#cb30-6" tabindex="-1"></a></span>
 <span id="cb30-7"><a href="#cb30-7" tabindex="-1"></a>fasta_all <span class="ot">&lt;-</span> <span class="fu">rbind</span>(fasta_human, fasta_sars)</span>
 <span id="cb30-8"><a href="#cb30-8" tabindex="-1"></a></span>
-<span id="cb30-9"><a href="#cb30-9" tabindex="-1"></a><span class="co"># Use a temp file for portability (works on any machine)</span></span>
-<span id="cb30-10"><a href="#cb30-10" tabindex="-1"></a>fasta_path <span class="ot">&lt;-</span> <span class="fu">file.path</span>(<span class="fu">tempdir</span>(), <span class="st">&quot;proteins_human_plus_sarscov2.fasta&quot;</span>)</span>
-<span id="cb30-11"><a href="#cb30-11" tabindex="-1"></a><span class="fu">writeLines</span>(fasta_all<span class="sc">$</span>V1, <span class="at">con =</span> fasta_path)</span>
-<span id="cb30-12"><a href="#cb30-12" tabindex="-1"></a></span>
-<span id="cb30-13"><a href="#cb30-13" tabindex="-1"></a><span class="co"># Show a FASTA header example</span></span>
-<span id="cb30-14"><a href="#cb30-14" tabindex="-1"></a>fasta_all<span class="sc">$</span>V1[<span class="dv">1</span>]</span></code></pre></div>
+<span id="cb30-9"><a href="#cb30-9" tabindex="-1"></a><span class="co"># tempdir() retourne un fichier temporaire</span></span>
+<span id="cb30-10"><a href="#cb30-10" tabindex="-1"></a><span class="co"># On sauve le fichier FASTA fusionné dans ce fichier temporaire</span></span>
+<span id="cb30-11"><a href="#cb30-11" tabindex="-1"></a>fasta_path <span class="ot">&lt;-</span> <span class="fu">file.path</span>(<span class="fu">tempdir</span>(), <span class="st">&quot;proteins_human_plus_sarscov2.fasta&quot;</span>)</span>
+<span id="cb30-12"><a href="#cb30-12" tabindex="-1"></a><span class="fu">writeLines</span>(fasta_all<span class="sc">$</span>V1, <span class="at">con =</span> fasta_path)</span>
+<span id="cb30-13"><a href="#cb30-13" tabindex="-1"></a></span>
+<span id="cb30-14"><a href="#cb30-14" tabindex="-1"></a><span class="co"># Affiche la première ligne du fichier FASTA</span></span>
+<span id="cb30-15"><a href="#cb30-15" tabindex="-1"></a>fasta_all<span class="sc">$</span>V1[<span class="dv">1</span>]</span></code></pre></div>
 <pre><code>## [1] &quot;&gt;sp|Q9HBI6|CP4FB_HUMAN Cytochrome P450 4F11 OS=Homo sapiens OX=9606 GN=CYP4F11 PE=1 SV=3&quot;</code></pre>
-<div class="sourceCode" id="cb32"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb32-1"><a href="#cb32-1" tabindex="-1"></a>fasta_path</span></code></pre></div>
-<pre><code>## [1] &quot;C:\\Users\\qgiaigia\\AppData\\Local\\Temp\\Rtmp2HRteT/proteins_human_plus_sarscov2.fasta&quot;</code></pre>
+<div class="sourceCode" id="cb32"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb32-1"><a href="#cb32-1" tabindex="-1"></a><span class="co"># Affiche le chemin vers le fichier FASTA</span></span>
+<span id="cb32-2"><a href="#cb32-2" tabindex="-1"></a>fasta_path</span></code></pre></div>
+<pre><code>## [1] &quot;C:\\Users\\qgiaigia\\AppData\\Local\\Temp\\Rtmp2JAUiw/proteins_human_plus_sarscov2.fasta&quot;</code></pre>
 <hr />
 </div>
 </div>
@@ -1887,46 +1919,53 @@ sars-cov-2), puis nous les enregistrons localement.</p>
 “MSstatsPTM”</h1>
 <div id="runs-enrichis-en-phosphorylation" class="section level2">
 <h2>5.1. Runs enrichis en phosphorylation</h2>
+<p>MaxQtoMSstatsPTMFormat() lit le fichier “evidence” de MaxQuant et le
+reformatte en la structure que MSstatsPTM attends pour une analyse au
+niveau PTM.</p>
 <p>Paramètres clés :</p>
 <ul>
-<li><p><code>mod_id</code> : motif (pattern) permettant d’identifier les
-modifications de phosphorylation dans les chaînes de caractères de
-MaxQuant.</p></li>
-<li><p><code>use_unmod_peptides = FALSE</code> : puisqu’il s’agit d’un
+<li><code>mod_id</code> : motif (pattern regex) permettant d’identifier
+les modifications de phosphorylation dans les chaînes de caractères de
+MaxQuant.</li>
+<li><code>use_unmod_peptides = FALSE</code> : puisqu’il s’agit d’un
 fichier <em>evidence</em> issu d’un enrichissement en phosphopeptides,
 nous ne voulons donc pas inférer ici l’abondance globale des
-protéines.</p></li>
+protéines.</li>
+<li><code>labeling_type</code> : “LF” = Label-Free quantification.</li>
+<li><code>fasta_protein_name</code> : permet l’extraction du code
+Uniprot à partir du fasta</li>
 </ul>
+<p>Cette fonction peut prendre du temps.</p>
 <div class="sourceCode" id="cb34"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb34-1"><a href="#cb34-1" tabindex="-1"></a>ms_ptm <span class="ot">&lt;-</span> <span class="fu">MaxQtoMSstatsPTMFormat</span>(</span>
 <span id="cb34-2"><a href="#cb34-2" tabindex="-1"></a>  <span class="at">evidence =</span> evidence_ptm,</span>
 <span id="cb34-3"><a href="#cb34-3" tabindex="-1"></a>  <span class="at">annotation =</span> annot_ptm[, <span class="fu">c</span>(<span class="st">&quot;Run&quot;</span>, <span class="st">&quot;Condition&quot;</span>, <span class="st">&quot;BioReplicate&quot;</span>)],</span>
 <span id="cb34-4"><a href="#cb34-4" tabindex="-1"></a>  <span class="at">fasta =</span> fasta_path,</span>
-<span id="cb34-5"><a href="#cb34-5" tabindex="-1"></a>  <span class="at">fasta_protein_name =</span> <span class="st">&quot;uniprot_ac&quot;</span>,         <span class="co"># FASTA headers like &gt;sp|Q9HBI6|... (accession = Q9HBI6)</span></span>
+<span id="cb34-5"><a href="#cb34-5" tabindex="-1"></a>  <span class="at">fasta_protein_name =</span> <span class="st">&quot;uniprot_ac&quot;</span>,  <span class="co">#FASTA headers du type &gt;sp|Q9HBI6|... (accession = Q9HBI6)</span></span>
 <span id="cb34-6"><a href="#cb34-6" tabindex="-1"></a>  <span class="at">mod_id =</span> <span class="st">&quot;</span><span class="sc">\\</span><span class="st">(Phospho </span><span class="sc">\\</span><span class="st">(STY</span><span class="sc">\\</span><span class="st">)</span><span class="sc">\\</span><span class="st">)&quot;</span>,</span>
 <span id="cb34-7"><a href="#cb34-7" tabindex="-1"></a>  <span class="at">use_unmod_peptides =</span> <span class="cn">FALSE</span>,</span>
 <span id="cb34-8"><a href="#cb34-8" tabindex="-1"></a>  <span class="at">labeling_type =</span> <span class="st">&quot;LF&quot;</span>,</span>
 <span id="cb34-9"><a href="#cb34-9" tabindex="-1"></a>  <span class="at">which_proteinid_ptm =</span> <span class="st">&quot;Proteins&quot;</span></span>
 <span id="cb34-10"><a href="#cb34-10" tabindex="-1"></a>)</span></code></pre></div>
 <pre><code>## [1] &quot;FASTA file missing 4098 Proteins. These will be removed. This may be due to non-unique identifications.&quot;
-## INFO  [2026-05-07 16:43:19] ** Raw data from MaxQuant imported successfully.
-## INFO  [2026-05-07 16:43:19] ** Rows with values of Potentialcontaminant equal to + are removed 
-## INFO  [2026-05-07 16:43:19] ** Rows with values of Reverse equal to + are removed 
-## INFO  [2026-05-07 16:43:19] ** Using provided annotation.
-## INFO  [2026-05-07 16:43:19] ** Run labels were standardized to remove symbols such as &#39;.&#39; or &#39;%&#39;.
-## INFO  [2026-05-07 16:43:19] ** The following options are used:
+## INFO  [2026-05-12 11:39:48] ** Raw data from MaxQuant imported successfully.
+## INFO  [2026-05-12 11:39:48] ** Rows with values of Potentialcontaminant equal to + are removed 
+## INFO  [2026-05-12 11:39:48] ** Rows with values of Reverse equal to + are removed 
+## INFO  [2026-05-12 11:39:48] ** Using provided annotation.
+## INFO  [2026-05-12 11:39:48] ** Run labels were standardized to remove symbols such as &#39;.&#39; or &#39;%&#39;.
+## INFO  [2026-05-12 11:39:48] ** The following options are used:
 ##   - Features will be defined by the columns: PeptideSequence, PrecursorCharge
 ##   - Shared peptides will be removed.
 ##   - Proteins with single feature will not be removed.
 ##   - Features with less than 3 measurements across runs will be removed.
-## INFO  [2026-05-07 16:43:19] ** Features with all missing measurements across runs are removed.
-## INFO  [2026-05-07 16:43:19] ** Shared peptides are removed.
-## INFO  [2026-05-07 16:43:19] ** Multiple measurements in a feature and a run are summarized by summaryforMultipleRows: max
-## INFO  [2026-05-07 16:43:19] ** Features with one or two measurements across runs are removed.
-## INFO  [2026-05-07 16:43:19] ** Run annotation merged with quantification data.
-## INFO  [2026-05-07 16:43:19] ** Features with one or two measurements across runs are removed.
-## INFO  [2026-05-07 16:43:19] ** Fractionation handled.
-## INFO  [2026-05-07 16:43:19] ** Updated quantification data to make balanced design. Missing values are marked by NA
-## INFO  [2026-05-07 16:43:19] ** Finished preprocessing. The dataset is ready to be processed by the dataProcess function.</code></pre>
+## INFO  [2026-05-12 11:39:48] ** Features with all missing measurements across runs are removed.
+## INFO  [2026-05-12 11:39:48] ** Shared peptides are removed.
+## INFO  [2026-05-12 11:39:48] ** Multiple measurements in a feature and a run are summarized by summaryforMultipleRows: max
+## INFO  [2026-05-12 11:39:48] ** Features with one or two measurements across runs are removed.
+## INFO  [2026-05-12 11:39:48] ** Run annotation merged with quantification data.
+## INFO  [2026-05-12 11:39:48] ** Features with one or two measurements across runs are removed.
+## INFO  [2026-05-12 11:39:48] ** Fractionation handled.
+## INFO  [2026-05-12 11:39:48] ** Updated quantification data to make balanced design. Missing values are marked by NA
+## INFO  [2026-05-12 11:39:48] ** Finished preprocessing. The dataset is ready to be processed by the dataProcess function.</code></pre>
 <div class="sourceCode" id="cb36"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb36-1"><a href="#cb36-1" tabindex="-1"></a><span class="co"># What did we get?</span></span>
 <span id="cb36-2"><a href="#cb36-2" tabindex="-1"></a><span class="fu">names</span>(ms_ptm)</span></code></pre></div>
 <pre><code>## [1] &quot;PTM&quot;</code></pre>
@@ -1965,52 +2004,55 @@ protéines.</p></li>
 <p>On télécharge <code>proteinGroups.txt</code> depuis PRIDE, on créé
 ensuite le fichier evidence “global”, le fichier “annotation”
 correspondant puis on le convertit au format MSstats.</p>
-<div class="sourceCode" id="cb40"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb40-1"><a href="#cb40-1" tabindex="-1"></a><span class="co"># Download proteinGroups.txt (needed by MSstats MaxQuant converter)</span></span>
+<div class="sourceCode" id="cb40"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb40-1"><a href="#cb40-1" tabindex="-1"></a><span class="co"># Téléchargement de proteinGroups.txt (requis pour le converter de MaxQuant à MSstats)</span></span>
 <span id="cb40-2"><a href="#cb40-2" tabindex="-1"></a>pg_url <span class="ot">&lt;-</span> <span class="st">&quot;https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/proteinGroups.txt&quot;</span></span>
 <span id="cb40-3"><a href="#cb40-3" tabindex="-1"></a>pg_file <span class="ot">&lt;-</span> <span class="fu">file.path</span>(<span class="fu">tempdir</span>(), <span class="st">&quot;proteinGroups.txt&quot;</span>)</span>
 <span id="cb40-4"><a href="#cb40-4" tabindex="-1"></a><span class="fu">download.file</span>(pg_url, <span class="at">destfile =</span> pg_file, <span class="at">mode =</span> <span class="st">&quot;wb&quot;</span>)</span>
 <span id="cb40-5"><a href="#cb40-5" tabindex="-1"></a><span class="fu">file.info</span>(pg_file)<span class="sc">$</span>size</span></code></pre></div>
 <pre><code>## [1] 33029785</code></pre>
-<div class="sourceCode" id="cb42"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb42-1"><a href="#cb42-1" tabindex="-1"></a><span class="co"># Write the global evidence subset to a temporary file (MSstats expects file path)</span></span>
+<div class="sourceCode" id="cb42"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb42-1"><a href="#cb42-1" tabindex="-1"></a><span class="co"># Ecris le fichier &quot;evidence&quot; global dans un fichier temporaire</span></span>
 <span id="cb42-2"><a href="#cb42-2" tabindex="-1"></a>prot_evi_file <span class="ot">&lt;-</span> <span class="fu">file.path</span>(<span class="fu">tempdir</span>(), <span class="st">&quot;evidence_global.txt&quot;</span>)</span>
 <span id="cb42-3"><a href="#cb42-3" tabindex="-1"></a><span class="fu">fwrite</span>(evidence_prot, prot_evi_file, <span class="at">sep =</span> <span class="st">&quot;</span><span class="sc">\t</span><span class="st">&quot;</span>, <span class="at">quote =</span> <span class="cn">FALSE</span>, <span class="at">na =</span> <span class="st">&quot;NA&quot;</span>)</span>
 <span id="cb42-4"><a href="#cb42-4" tabindex="-1"></a></span>
-<span id="cb42-5"><a href="#cb42-5" tabindex="-1"></a><span class="co"># Annotation file for MSstats (can be a file path)</span></span>
+<span id="cb42-5"><a href="#cb42-5" tabindex="-1"></a><span class="co"># Fichier annotation pour MSstats (ça peut être un chemin vers le fichier)</span></span>
 <span id="cb42-6"><a href="#cb42-6" tabindex="-1"></a>prot_annot_file <span class="ot">&lt;-</span> <span class="fu">file.path</span>(<span class="fu">tempdir</span>(), <span class="st">&quot;annotation_global.csv&quot;</span>)</span>
 <span id="cb42-7"><a href="#cb42-7" tabindex="-1"></a><span class="fu">fwrite</span>(<span class="fu">as.data.table</span>(annot_prot[, <span class="fu">c</span>(<span class="st">&quot;Run&quot;</span>, <span class="st">&quot;Condition&quot;</span>, <span class="st">&quot;BioReplicate&quot;</span>)]), prot_annot_file)</span>
 <span id="cb42-8"><a href="#cb42-8" tabindex="-1"></a></span>
-<span id="cb42-9"><a href="#cb42-9" tabindex="-1"></a><span class="co"># Convert global proteome evidence to MSstats format</span></span>
-<span id="cb42-10"><a href="#cb42-10" tabindex="-1"></a>ms_prot <span class="ot">&lt;-</span> MSstats<span class="sc">::</span><span class="fu">MaxQtoMSstatsFormat</span>(</span>
-<span id="cb42-11"><a href="#cb42-11" tabindex="-1"></a>  <span class="at">evidence =</span> prot_evi_file,</span>
-<span id="cb42-12"><a href="#cb42-12" tabindex="-1"></a>  <span class="at">annotation =</span> prot_annot_file,</span>
-<span id="cb42-13"><a href="#cb42-13" tabindex="-1"></a>  <span class="at">proteinGroups =</span> pg_file,</span>
-<span id="cb42-14"><a href="#cb42-14" tabindex="-1"></a>  <span class="at">useUniquePeptide =</span> <span class="cn">TRUE</span></span>
-<span id="cb42-15"><a href="#cb42-15" tabindex="-1"></a>)</span></code></pre></div>
-<pre><code>## INFO  [2026-05-07 16:43:23] ** Raw data from MaxQuant imported successfully.
-## INFO  [2026-05-07 16:43:23] ** Rows with values of Potentialcontaminant equal to + are removed 
-## INFO  [2026-05-07 16:43:23] ** Rows with values of Reverse equal to + are removed 
-## INFO  [2026-05-07 16:43:24] ** Rows with values of Potentialcontaminant equal to + are removed 
-## INFO  [2026-05-07 16:43:24] ** Rows with values of Reverse equal to + are removed 
-## INFO  [2026-05-07 16:43:24] ** Rows with values of Onlyidentifiedbysite equal to + are removed 
-## INFO  [2026-05-07 16:43:24] ** + Contaminant, + Reverse, + Potential.contaminant, + Only.identified.by.site proteins are removed.
-## INFO  [2026-05-07 16:43:25] ** Raw data from MaxQuant cleaned successfully.
-## INFO  [2026-05-07 16:43:25] ** Using provided annotation.
-## INFO  [2026-05-07 16:43:25] ** Run labels were standardized to remove symbols such as &#39;.&#39; or &#39;%&#39;.
-## INFO  [2026-05-07 16:43:25] ** The following options are used:
+<span id="cb42-9"><a href="#cb42-9" tabindex="-1"></a><span class="co"># Converti le fichier evidence du proteome global au format MSstats</span></span>
+<span id="cb42-10"><a href="#cb42-10" tabindex="-1"></a><span class="co"># useUniquePeptide = TRUE : on ne garde que les peptides qui &quot;mappent&quot; sur une </span></span>
+<span id="cb42-11"><a href="#cb42-11" tabindex="-1"></a><span class="co"># seule protéine (pas de peptides partagés).</span></span>
+<span id="cb42-12"><a href="#cb42-12" tabindex="-1"></a>ms_prot <span class="ot">&lt;-</span> MSstats<span class="sc">::</span><span class="fu">MaxQtoMSstatsFormat</span>(</span>
+<span id="cb42-13"><a href="#cb42-13" tabindex="-1"></a>  <span class="at">evidence =</span> prot_evi_file,</span>
+<span id="cb42-14"><a href="#cb42-14" tabindex="-1"></a>  <span class="at">annotation =</span> prot_annot_file,</span>
+<span id="cb42-15"><a href="#cb42-15" tabindex="-1"></a>  <span class="at">proteinGroups =</span> pg_file,</span>
+<span id="cb42-16"><a href="#cb42-16" tabindex="-1"></a>  <span class="at">useUniquePeptide =</span> <span class="cn">TRUE</span></span>
+<span id="cb42-17"><a href="#cb42-17" tabindex="-1"></a>)</span></code></pre></div>
+<pre><code>## INFO  [2026-05-12 11:39:51] ** Raw data from MaxQuant imported successfully.
+## INFO  [2026-05-12 11:39:51] ** Rows with values of Potentialcontaminant equal to + are removed 
+## INFO  [2026-05-12 11:39:52] ** Rows with values of Reverse equal to + are removed 
+## INFO  [2026-05-12 11:39:53] ** Rows with values of Potentialcontaminant equal to + are removed 
+## INFO  [2026-05-12 11:39:53] ** Rows with values of Reverse equal to + are removed 
+## INFO  [2026-05-12 11:39:53] ** Rows with values of Onlyidentifiedbysite equal to + are removed 
+## INFO  [2026-05-12 11:39:53] ** + Contaminant, + Reverse, + Potential.contaminant, + Only.identified.by.site proteins are removed.
+## INFO  [2026-05-12 11:39:54] ** Raw data from MaxQuant cleaned successfully.
+## INFO  [2026-05-12 11:39:54] ** Using provided annotation.
+## INFO  [2026-05-12 11:39:54] ** Run labels were standardized to remove symbols such as &#39;.&#39; or &#39;%&#39;.
+## INFO  [2026-05-12 11:39:54] ** The following options are used:
 ##   - Features will be defined by the columns: PeptideSequence, PrecursorCharge
 ##   - Shared peptides will be removed.
 ##   - Proteins with single feature will not be removed.
 ##   - Features with less than 3 measurements across runs will be removed.
-## INFO  [2026-05-07 16:43:25] ** Features with all missing measurements across runs are removed.
-## INFO  [2026-05-07 16:43:26] ** Shared peptides are removed.
-## INFO  [2026-05-07 16:43:27] ** Multiple measurements in a feature and a run are summarized by summaryforMultipleRows: max
-## INFO  [2026-05-07 16:43:27] ** Features with one or two measurements across runs are removed.
-## INFO  [2026-05-07 16:43:27] ** Run annotation merged with quantification data.
-## INFO  [2026-05-07 16:43:28] ** Features with one or two measurements across runs are removed.
-## INFO  [2026-05-07 16:43:28] ** Fractionation handled.
-## INFO  [2026-05-07 16:43:28] ** Updated quantification data to make balanced design. Missing values are marked by NA
-## INFO  [2026-05-07 16:43:28] ** Finished preprocessing. The dataset is ready to be processed by the dataProcess function.</code></pre>
-<div class="sourceCode" id="cb44"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb44-1"><a href="#cb44-1" tabindex="-1"></a><span class="fu">head</span>(ms_prot)</span></code></pre></div>
+## INFO  [2026-05-12 11:39:54] ** Features with all missing measurements across runs are removed.
+## INFO  [2026-05-12 11:39:55] ** Shared peptides are removed.
+## INFO  [2026-05-12 11:39:55] ** Multiple measurements in a feature and a run are summarized by summaryforMultipleRows: max
+## INFO  [2026-05-12 11:39:55] ** Features with one or two measurements across runs are removed.
+## INFO  [2026-05-12 11:39:56] ** Run annotation merged with quantification data.
+## INFO  [2026-05-12 11:39:56] ** Features with one or two measurements across runs are removed.
+## INFO  [2026-05-12 11:39:56] ** Fractionation handled.
+## INFO  [2026-05-12 11:39:57] ** Updated quantification data to make balanced design. Missing values are marked by NA
+## INFO  [2026-05-12 11:39:57] ** Finished preprocessing. The dataset is ready to be processed by the dataProcess function.</code></pre>
+<div class="sourceCode" id="cb44"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb44-1"><a href="#cb44-1" tabindex="-1"></a><span class="co">#On vérifie le fichier créé</span></span>
+<span id="cb44-2"><a href="#cb44-2" tabindex="-1"></a><span class="fu">head</span>(ms_prot)</span></code></pre></div>
 <pre><code>##                                         ProteinName
 ## 1 Q86U42-2;Q86U42;Q92843-2;A6NDY0-2;A6NDY0;A6NDY0-4
 ## 2 Q86U42-2;Q86U42;Q92843-2;A6NDY0-2;A6NDY0;A6NDY0-4
@@ -2050,12 +2092,16 @@ correspondant puis on le convertit au format MSstats.</p>
 <li><code>PROTEIN</code>: table au niveau “protéine” (global
 proteome)</li>
 </ul>
+<p>Les deux fichiers sont séparés car ils viennent de différents
+échantillons (enrichis et non-enrichis). MSstatsPTM les alignera par
+protéine ID.</p>
 <div class="sourceCode" id="cb46"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb46-1"><a href="#cb46-1" tabindex="-1"></a>raw.input <span class="ot">&lt;-</span> <span class="fu">list</span>(</span>
 <span id="cb46-2"><a href="#cb46-2" tabindex="-1"></a>  <span class="at">PTM =</span> ms_ptm<span class="sc">$</span>PTM,</span>
 <span id="cb46-3"><a href="#cb46-3" tabindex="-1"></a>  <span class="at">PROTEIN =</span> ms_prot</span>
 <span id="cb46-4"><a href="#cb46-4" tabindex="-1"></a>)</span>
 <span id="cb46-5"><a href="#cb46-5" tabindex="-1"></a></span>
-<span id="cb46-6"><a href="#cb46-6" tabindex="-1"></a><span class="fu">lapply</span>(raw.input, head)</span></code></pre></div>
+<span id="cb46-6"><a href="#cb46-6" tabindex="-1"></a><span class="co">#Affichage des premières lignes des deux fichiers</span></span>
+<span id="cb46-7"><a href="#cb46-7" tabindex="-1"></a><span class="fu">lapply</span>(raw.input, head)</span></code></pre></div>
 <pre><code>## $PTM
 ##   ProteinName                     PeptideSequence PrecursorCharge FragmentIon
 ## 1 Q6SPF0_S161 AAAAAATAPPS(Phospho (STY))PGPAQPGPR               2          NA
@@ -2112,6 +2158,8 @@ proteome)</li>
 </div>
 <div id="summarization-avec-datasummarizationptm" class="section level1">
 <h1>7. “Summarization” avec <code>dataSummarizationPTM</code></h1>
+<p>Les données contiennent des mesures multiples par protéine et par
+échantillon (états de charge, etc.)</p>
 <p>Cette étape :</p>
 <ul>
 <li><p>résume les signaux de PTM au niveau site de modification/peptide
@@ -2120,7 +2168,8 @@ pour chaque run</p></li>
 <li><p>gère les valeurs manquantes et la normalisation selon les
 paramètres par défaut (configurables)</p></li>
 </ul>
-<p>Elle peut prendre du temps suivant la taille du jeux de données.</p>
+<p>C’est l’étape qui prend le plus de temps (suivant la taille du jeux
+de données).</p>
 <div class="sourceCode" id="cb48"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb48-1"><a href="#cb48-1" tabindex="-1"></a>sum.obj <span class="ot">&lt;-</span> <span class="fu">dataSummarizationPTM</span>(</span>
 <span id="cb48-2"><a href="#cb48-2" tabindex="-1"></a>  <span class="at">data =</span> raw.input,</span>
 <span id="cb48-3"><a href="#cb48-3" tabindex="-1"></a>  <span class="at">verbose =</span> <span class="cn">FALSE</span>,</span>
@@ -2129,8 +2178,10 @@ paramètres par défaut (configurables)</p></li>
 <span id="cb48-6"><a href="#cb48-6" tabindex="-1"></a>)</span></code></pre></div>
 <pre><code>## Starting PTM summarization...</code></pre>
 <pre><code>## Starting Protein summarization...</code></pre>
-<div class="sourceCode" id="cb51"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb51-1"><a href="#cb51-1" tabindex="-1"></a><span class="fu">head</span>(sum.obj<span class="sc">$</span>PTM<span class="sc">$</span>ProteinLevelData)</span>
-<span id="cb51-2"><a href="#cb51-2" tabindex="-1"></a><span class="fu">head</span>(sum.obj<span class="sc">$</span>PROTEIN<span class="sc">$</span>ProteinLevelData)</span></code></pre></div>
+<div class="sourceCode" id="cb51"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb51-1"><a href="#cb51-1" tabindex="-1"></a><span class="co"># On affiche les premières lignes au niveau protéine pour les PTM et le protéome </span></span>
+<span id="cb51-2"><a href="#cb51-2" tabindex="-1"></a><span class="co"># global</span></span>
+<span id="cb51-3"><a href="#cb51-3" tabindex="-1"></a><span class="fu">head</span>(sum.obj<span class="sc">$</span>PTM<span class="sc">$</span>ProteinLevelData)</span>
+<span id="cb51-4"><a href="#cb51-4" tabindex="-1"></a><span class="fu">head</span>(sum.obj<span class="sc">$</span>PROTEIN<span class="sc">$</span>ProteinLevelData)</span></code></pre></div>
 <hr />
 </div>
 <div id="quality-control-plots" class="section level1">
@@ -2211,21 +2262,29 @@ des données résumées</h2>
 <p>MSstatsPTM utilise les étiquettes présentes dans
 <code>ProteinLevelData</code>.</p>
 <p>Nous allons modifier l’objet <code>sum.obj</code> :</p>
-<div class="sourceCode" id="cb59"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb59-1"><a href="#cb59-1" tabindex="-1"></a><span class="co"># Create combined condition labels in PTM and PROTEIN summarization tables</span></span>
+<div class="sourceCode" id="cb59"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb59-1"><a href="#cb59-1" tabindex="-1"></a><span class="co"># On fait une copie pour conserver l&#39;objet original</span></span>
 <span id="cb59-2"><a href="#cb59-2" tabindex="-1"></a>sum.obj2 <span class="ot">&lt;-</span> sum.obj</span>
 <span id="cb59-3"><a href="#cb59-3" tabindex="-1"></a></span>
-<span id="cb59-4"><a href="#cb59-4" tabindex="-1"></a><span class="cf">for</span> (part <span class="cf">in</span> <span class="fu">c</span>(<span class="st">&quot;PTM&quot;</span>, <span class="st">&quot;PROTEIN&quot;</span>)) {</span>
-<span id="cb59-5"><a href="#cb59-5" tabindex="-1"></a>  dt <span class="ot">&lt;-</span> <span class="fu">as.data.table</span>(sum.obj2[[part]]<span class="sc">$</span>ProteinLevelData)</span>
-<span id="cb59-6"><a href="#cb59-6" tabindex="-1"></a>  </span>
-<span id="cb59-7"><a href="#cb59-7" tabindex="-1"></a>  dt[, Time <span class="sc">:=</span> <span class="fu">fifelse</span>(<span class="fu">grepl</span>(<span class="st">&quot;_(ME|TE)_&quot;</span>, originalRUN), <span class="st">&quot;6h&quot;</span>,</span>
-<span id="cb59-8"><a href="#cb59-8" tabindex="-1"></a>                       <span class="fu">fifelse</span>(<span class="fu">grepl</span>(<span class="st">&quot;_(ML|TL)_&quot;</span>, originalRUN), <span class="st">&quot;24h&quot;</span>, <span class="cn">NA_character_</span>))]</span>
-<span id="cb59-9"><a href="#cb59-9" tabindex="-1"></a>  </span>
-<span id="cb59-10"><a href="#cb59-10" tabindex="-1"></a>  dt[, GROUP <span class="sc">:=</span> <span class="fu">paste</span>(GROUP, Time, <span class="at">sep =</span> <span class="st">&quot;_&quot;</span>)]</span>
-<span id="cb59-11"><a href="#cb59-11" tabindex="-1"></a>  </span>
-<span id="cb59-12"><a href="#cb59-12" tabindex="-1"></a>  sum.obj2[[part]]<span class="sc">$</span>ProteinLevelData <span class="ot">&lt;-</span> dt</span>
-<span id="cb59-13"><a href="#cb59-13" tabindex="-1"></a>}</span>
-<span id="cb59-14"><a href="#cb59-14" tabindex="-1"></a></span>
-<span id="cb59-15"><a href="#cb59-15" tabindex="-1"></a><span class="fu">unique</span>(sum.obj2<span class="sc">$</span>PTM<span class="sc">$</span>ProteinLevelData[, .(GROUP, Time)])</span></code></pre></div>
+<span id="cb59-4"><a href="#cb59-4" tabindex="-1"></a><span class="co"># La colonne GROUP contient &quot;mock&quot; ou &quot;SARS_COV2&quot;.</span></span>
+<span id="cb59-5"><a href="#cb59-5" tabindex="-1"></a><span class="co"># On veut &quot;mock_6h&quot;, &quot;mock_24h&quot;, &quot;SARS_COV2_6h&quot;, &quot;SARS_COV2_24h&quot;.</span></span>
+<span id="cb59-6"><a href="#cb59-6" tabindex="-1"></a><span class="co">#</span></span>
+<span id="cb59-7"><a href="#cb59-7" tabindex="-1"></a><span class="co"># Le point de temps est encodé dans le nom de l&#39;échantillon:</span></span>
+<span id="cb59-8"><a href="#cb59-8" tabindex="-1"></a><span class="co">#   &quot;_ME_&quot; or &quot;_TE_&quot; = early time point (6h)</span></span>
+<span id="cb59-9"><a href="#cb59-9" tabindex="-1"></a><span class="co">#   &quot;_ML_&quot; or &quot;_TL_&quot; = late time point (24h)</span></span>
+<span id="cb59-10"><a href="#cb59-10" tabindex="-1"></a><span class="co"># On détecte ces patterns dans la colonne originalRUN en utilisant grepl().</span></span>
+<span id="cb59-11"><a href="#cb59-11" tabindex="-1"></a></span>
+<span id="cb59-12"><a href="#cb59-12" tabindex="-1"></a><span class="cf">for</span> (part <span class="cf">in</span> <span class="fu">c</span>(<span class="st">&quot;PTM&quot;</span>, <span class="st">&quot;PROTEIN&quot;</span>)) {</span>
+<span id="cb59-13"><a href="#cb59-13" tabindex="-1"></a>  dt <span class="ot">&lt;-</span> <span class="fu">as.data.table</span>(sum.obj2[[part]]<span class="sc">$</span>ProteinLevelData)</span>
+<span id="cb59-14"><a href="#cb59-14" tabindex="-1"></a>  </span>
+<span id="cb59-15"><a href="#cb59-15" tabindex="-1"></a>  dt[, Time <span class="sc">:=</span> <span class="fu">fifelse</span>(<span class="fu">grepl</span>(<span class="st">&quot;_(ME|TE)_&quot;</span>, originalRUN), <span class="st">&quot;6h&quot;</span>,</span>
+<span id="cb59-16"><a href="#cb59-16" tabindex="-1"></a>                       <span class="fu">fifelse</span>(<span class="fu">grepl</span>(<span class="st">&quot;_(ML|TL)_&quot;</span>, originalRUN), <span class="st">&quot;24h&quot;</span>, <span class="cn">NA_character_</span>))]</span>
+<span id="cb59-17"><a href="#cb59-17" tabindex="-1"></a>  </span>
+<span id="cb59-18"><a href="#cb59-18" tabindex="-1"></a>  dt[, GROUP <span class="sc">:=</span> <span class="fu">paste</span>(GROUP, Time, <span class="at">sep =</span> <span class="st">&quot;_&quot;</span>)]</span>
+<span id="cb59-19"><a href="#cb59-19" tabindex="-1"></a>  </span>
+<span id="cb59-20"><a href="#cb59-20" tabindex="-1"></a>  sum.obj2[[part]]<span class="sc">$</span>ProteinLevelData <span class="ot">&lt;-</span> dt</span>
+<span id="cb59-21"><a href="#cb59-21" tabindex="-1"></a>}</span>
+<span id="cb59-22"><a href="#cb59-22" tabindex="-1"></a></span>
+<span id="cb59-23"><a href="#cb59-23" tabindex="-1"></a><span class="fu">unique</span>(sum.obj2<span class="sc">$</span>PTM<span class="sc">$</span>ProteinLevelData[, .(GROUP, Time)])</span></code></pre></div>
 <pre><code>##            GROUP   Time
 ##           &lt;char&gt; &lt;char&gt;
 ## 1:  SARS_COV2_6h     6h
@@ -2239,11 +2298,48 @@ des données résumées</h2>
 ## 2: SARS_COV2_24h    24h
 ## 3:       mock_6h     6h
 ## 4:      mock_24h    24h</code></pre>
-<div class="sourceCode" id="cb63"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb63-1"><a href="#cb63-1" tabindex="-1"></a><span class="co"># You should now see only:</span></span>
+<div class="sourceCode" id="cb63"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb63-1"><a href="#cb63-1" tabindex="-1"></a><span class="co"># On doit avoir:</span></span>
 <span id="cb63-2"><a href="#cb63-2" tabindex="-1"></a><span class="co"># &quot;mock_6h&quot;, &quot;mock_24h&quot;, &quot;SARS_COV2_6h&quot;, &quot;SARS_COV2_24h&quot;</span></span></code></pre></div>
 </div>
+<div id="rappel-sur-les-matrices-de-design-et-de-contraste" class="section level2">
+<h2>9.2 Rappel sur les matrices de “design” et de “contraste”</h2>
+<p>Un modèle de régression linéaire peut s’écrire comme: <span class="math display">\[Y=XB+\epsilon\]</span> où <span class="math inline">\(Y\)</span> est un vecteur contenant les intensités
+des protéines/peptides dans différents échantillons, <span class="math inline">\(B\)</span> est un vecteur de paramètres, <span class="math inline">\(\epsilon\)</span> est un bruit blanc Gaussien, et
+<span class="math inline">\(X\)</span> est la matrice de
+<strong>design</strong>.</p>
+<p>Cette dernière définit le modèle qui sera utilisé pour modéliser les
+intensités des protéines/peptides.</p>
+<p>Par exemple, dans un cas simple “contrôle vs mutant” avec 3 réplicats
+dans chaque condition, le modèle linéaire sera: <span class="math display">\[\begin{bmatrix} y_{1}\\
+y_{2}\\
+y_{3}\\
+y_{4}\\
+y_{5}\\
+y_{6}
+\end{bmatrix}=\begin{bmatrix}1 &amp; 0\\
+1 &amp; 0\\
+1 &amp; 0\\
+1 &amp; 1\\
+1 &amp; 1\\
+1 &amp; 1
+\end{bmatrix}\begin{bmatrix}\alpha \\
+\beta\end{bmatrix}+\epsilon\]</span></p>
+<p>Lorqu’on utilise un test statistique, on s’intéresse à tester si des
+paramètres de ce modèle sont nuls (ou une combinaison linéaire de ces
+paramètres).</p>
+<p>Par exemple, dans le cas “contrôle vs mutant” précédent, on
+s’intéresse à tester la nullité du paramètre <span class="math inline">\(\beta\)</span>.</p>
+<p>Ceci peut être formulé comme une multiplication entre une matrice de
+“contraste” et le vecteur de paramètres, c.-à-d. qu’on veut tester si:
+<span class="math display">\[\begin{bmatrix}0 &amp; 1
+\end{bmatrix}\begin{bmatrix}\alpha \\ \beta\end{bmatrix}=0
+\Leftrightarrow \beta=0\]</span></p>
+<p>Plus généralement, le test statistique peut s’exprimer comme: <span class="math display">\[H_0: C^tB=0\qquad  vs\qquad H_1:
+C^tB\neq0\]</span> où <span class="math inline">\(C\)</span> est définie
+comme la matrice de <strong>contraste</strong>.</p>
+</div>
 <div id="définir-une-matrice-de-contrastes-groupes-spécifiques-au-temps" class="section level2">
-<h2>9.2. Définir une matrice de contrastes (groupes spécifiques au
+<h2>9.3. Définir une matrice de contrastes (groupes spécifiques au
 temps)</h2>
 <p>À ce stade, nous avons modifié <code>sum.obj2</code> de sorte que la
 colonne GROUP contienne quatre niveaux :</p>
@@ -2262,7 +2358,7 @@ colonne GROUP contienne quatre niveaux :</p>
 <span id="cb64-2"><a href="#cb64-2" tabindex="-1"></a>groups <span class="ot">&lt;-</span> <span class="fu">sort</span>(<span class="fu">unique</span>(sum.obj2<span class="sc">$</span>PROTEIN<span class="sc">$</span>ProteinLevelData<span class="sc">$</span>GROUP))</span>
 <span id="cb64-3"><a href="#cb64-3" tabindex="-1"></a>groups</span></code></pre></div>
 <pre><code>## [1] &quot;mock_24h&quot;      &quot;mock_6h&quot;       &quot;SARS_COV2_24h&quot; &quot;SARS_COV2_6h&quot;</code></pre>
-<div class="sourceCode" id="cb66"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb66-1"><a href="#cb66-1" tabindex="-1"></a><span class="co"># Create a 2-row contrast matrix:</span></span>
+<div class="sourceCode" id="cb66"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb66-1"><a href="#cb66-1" tabindex="-1"></a><span class="co"># On créé une matrice de contraste de deux lignes:</span></span>
 <span id="cb66-2"><a href="#cb66-2" tabindex="-1"></a><span class="co"># 1) SARS_COV2_6h - mock_6h</span></span>
 <span id="cb66-3"><a href="#cb66-3" tabindex="-1"></a><span class="co"># 2) SARS_COV2_24h - mock_24h</span></span>
 <span id="cb66-4"><a href="#cb66-4" tabindex="-1"></a>comparison <span class="ot">&lt;-</span> <span class="fu">matrix</span>(<span class="dv">0</span>, <span class="at">nrow =</span> <span class="dv">2</span>, <span class="at">ncol =</span> <span class="fu">length</span>(groups))</span>
@@ -2275,15 +2371,17 @@ colonne GROUP contienne quatre niveaux :</p>
 <span id="cb66-11"><a href="#cb66-11" tabindex="-1"></a>comparison[<span class="st">&quot;SARS24h-mock24h&quot;</span>, <span class="st">&quot;mock_24h&quot;</span>]       <span class="ot">&lt;-</span> <span class="sc">-</span><span class="dv">1</span></span>
 <span id="cb66-12"><a href="#cb66-12" tabindex="-1"></a>comparison[<span class="st">&quot;SARS24h-mock24h&quot;</span>, <span class="st">&quot;SARS_COV2_24h&quot;</span>]  <span class="ot">&lt;-</span>  <span class="dv">1</span></span>
 <span id="cb66-13"><a href="#cb66-13" tabindex="-1"></a></span>
-<span id="cb66-14"><a href="#cb66-14" tabindex="-1"></a>comparison</span></code></pre></div>
+<span id="cb66-14"><a href="#cb66-14" tabindex="-1"></a><span class="co">#Affichage pour vérifier que c&#39;est correct</span></span>
+<span id="cb66-15"><a href="#cb66-15" tabindex="-1"></a>comparison</span></code></pre></div>
 <pre><code>##                 mock_24h mock_6h SARS_COV2_24h SARS_COV2_6h
 ## SARS6h-mock6h          0      -1             0            1
 ## SARS24h-mock24h       -1       0             1            0</code></pre>
 <hr />
 </div>
 <div id="run-groupcomparisonptm" class="section level2">
-<h2>9.3. Run <code>groupComparisonPTM</code></h2>
-<p>Cette étape ajuste :</p>
+<h2>9.4. Run <code>groupComparisonPTM</code></h2>
+<p>Cette étape statistique est le point essentiel. Elle estime trois
+modèles :</p>
 <ul>
 <li><p>un modèle PTM sur les données de phosphorylation
 résumées,</p></li>
@@ -2303,9 +2401,9 @@ protéine.</p></li>
 <pre><code>## Starting PTM modeling...</code></pre>
 <pre><code>## Starting Protein modeling...</code></pre>
 <pre><code>## Starting adjustment...</code></pre>
-<div class="sourceCode" id="cb72"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb72-1"><a href="#cb72-1" tabindex="-1"></a><span class="fu">head</span>(model.obj<span class="sc">$</span>PTM.Model)</span>
-<span id="cb72-2"><a href="#cb72-2" tabindex="-1"></a><span class="fu">head</span>(model.obj<span class="sc">$</span>PROTEIN.Model)</span>
-<span id="cb72-3"><a href="#cb72-3" tabindex="-1"></a><span class="fu">head</span>(model.obj<span class="sc">$</span>ADJUSTED.Model)</span></code></pre></div>
+<div class="sourceCode" id="cb72"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb72-1"><a href="#cb72-1" tabindex="-1"></a><span class="fu">head</span>(model.obj<span class="sc">$</span>PTM.Model) <span class="co">#Modèle PTM &quot;non ajusté&quot; </span></span>
+<span id="cb72-2"><a href="#cb72-2" tabindex="-1"></a><span class="fu">head</span>(model.obj<span class="sc">$</span>PROTEIN.Model) <span class="co">#Modèle protéines</span></span>
+<span id="cb72-3"><a href="#cb72-3" tabindex="-1"></a><span class="fu">head</span>(model.obj<span class="sc">$</span>ADJUSTED.Model) <span class="co"># Modèle PTM ajusté par rapport aux protéines</span></span></code></pre></div>
 <p>Après <code>groupComparisonPTM()</code>, MSstatsPTM retourne trois
 datasets:</p>
 <ul>
@@ -2316,9 +2414,9 @@ l’abondance de la protéine)</li>
 </ul>
 <p>Une question très fréquente est :</p>
 <blockquote>
-<p>« Ce site de phosphorylation est significatif dans PTM.Model. Est-il
+<p>“Ce site de phosphorylation est significatif dans PTM.Model. Est-il
 toujours significatif après prise en compte des variations au niveau de
-la protéine ? »</p>
+la protéine ?”</p>
 </blockquote>
 <p>Ci-dessous, un petit bloc d’aide permet de sélectionner un site PTM
 et de comparer directement :</p>
@@ -2328,19 +2426,19 @@ et de comparer directement :</p>
 <li>ce que fait la protéine (variation globale)</li>
 </ul>
 <div id="choisir-un-site-ptm-dintérêt" class="section level3">
-<h3>9.3.1. Choisir un site PTM d’intérêt</h3>
+<h3>9.4.1. Choisir un site PTM d’intérêt</h3>
 <p>Ici, nous sélectionnons le site le plus significatif après ajustement
 (p-value ajustée minimale) dans le premier contraste.</p>
-<div class="sourceCode" id="cb73"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb73-1"><a href="#cb73-1" tabindex="-1"></a><span class="co"># Look at available contrasts</span></span>
+<div class="sourceCode" id="cb73"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb73-1"><a href="#cb73-1" tabindex="-1"></a><span class="co"># Contrastes disponibles</span></span>
 <span id="cb73-2"><a href="#cb73-2" tabindex="-1"></a><span class="fu">unique</span>(model.obj<span class="sc">$</span>ADJUSTED.Model<span class="sc">$</span>Label)</span></code></pre></div>
 <pre><code>## [1] &quot;SARS6h-mock6h&quot;   &quot;SARS24h-mock24h&quot;</code></pre>
-<div class="sourceCode" id="cb75"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb75-1"><a href="#cb75-1" tabindex="-1"></a><span class="co"># Choose a contrast to interpret (first one by default)</span></span>
+<div class="sourceCode" id="cb75"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb75-1"><a href="#cb75-1" tabindex="-1"></a><span class="co"># On choisi un contraste</span></span>
 <span id="cb75-2"><a href="#cb75-2" tabindex="-1"></a>contrast_to_show <span class="ot">&lt;-</span> <span class="fu">unique</span>(model.obj<span class="sc">$</span>ADJUSTED.Model<span class="sc">$</span>Label)[<span class="dv">1</span>]</span>
 <span id="cb75-3"><a href="#cb75-3" tabindex="-1"></a>contrast_to_show</span></code></pre></div>
 <pre><code>## [1] &quot;SARS6h-mock6h&quot;</code></pre>
 <div class="sourceCode" id="cb77"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb77-1"><a href="#cb77-1" tabindex="-1"></a>adj_res <span class="ot">&lt;-</span> <span class="fu">as.data.table</span>(model.obj<span class="sc">$</span>ADJUSTED.Model)[Label <span class="sc">==</span> contrast_to_show]</span>
 <span id="cb77-2"><a href="#cb77-2" tabindex="-1"></a></span>
-<span id="cb77-3"><a href="#cb77-3" tabindex="-1"></a><span class="co"># Pick a PTM site: most significant after adjustment (smallest adj.pvalue)</span></span>
+<span id="cb77-3"><a href="#cb77-3" tabindex="-1"></a><span class="co"># PTM le plus significatif après ajustement (plus petite adj.pvalue)</span></span>
 <span id="cb77-4"><a href="#cb77-4" tabindex="-1"></a>site_to_show <span class="ot">&lt;-</span> adj_res[<span class="fu">order</span>(adj.pvalue)][<span class="dv">1</span>, Protein]</span>
 <span id="cb77-5"><a href="#cb77-5" tabindex="-1"></a>site_to_show</span></code></pre></div>
 <pre><code>## [1] Q96D46_S468_T470
@@ -2349,13 +2447,16 @@ et de comparer directement :</p>
 stocké dans la colonne <code>Protein</code> des tables PTM/ADJUSTED.</p>
 </div>
 <div id="ptm.model-vs-adjusted.model-vs-protein.model-pour-ce-site" class="section level3">
-<h3>9.3.2. PTM.Model vs ADJUSTED.Model vs PROTEIN.Model pour ce
+<h3>9.4.2. PTM.Model vs ADJUSTED.Model vs PROTEIN.Model pour ce
 site</h3>
+<p>On cherche à savoir si le changement d’abondance du PTM est dû au
+changement d’abondance de la protéine ou s’il y a un changement qui est
+dû à la modification</p>
 <div class="sourceCode" id="cb79"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb79-1"><a href="#cb79-1" tabindex="-1"></a>ptm_res <span class="ot">&lt;-</span> <span class="fu">as.data.table</span>(model.obj<span class="sc">$</span>PTM.Model)[Label <span class="sc">==</span> contrast_to_show <span class="sc">&amp;</span> Protein <span class="sc">==</span> site_to_show]</span>
 <span id="cb79-2"><a href="#cb79-2" tabindex="-1"></a>adj_res_one <span class="ot">&lt;-</span> <span class="fu">as.data.table</span>(model.obj<span class="sc">$</span>ADJUSTED.Model)[Label <span class="sc">==</span> contrast_to_show <span class="sc">&amp;</span> Protein <span class="sc">==</span> site_to_show]</span>
 <span id="cb79-3"><a href="#cb79-3" tabindex="-1"></a></span>
-<span id="cb79-4"><a href="#cb79-4" tabindex="-1"></a><span class="co"># Protein corresponding to the site: remove suffix after first &quot;_&quot; (works for typical &quot;P12345_S67&quot; format)</span></span>
-<span id="cb79-5"><a href="#cb79-5" tabindex="-1"></a><span class="co"># If your Protein IDs contain underscores for other reasons, adapt this parsing.</span></span>
+<span id="cb79-4"><a href="#cb79-4" tabindex="-1"></a><span class="co"># Le numéro d&#39;accession de la protéine est inclu dans l&#39;ID du PTM (ex: &quot;P12345_S67&quot;)</span></span>
+<span id="cb79-5"><a href="#cb79-5" tabindex="-1"></a><span class="co"># On utilise la fonction sub() pour extraire cet ID</span></span>
 <span id="cb79-6"><a href="#cb79-6" tabindex="-1"></a>base_protein <span class="ot">&lt;-</span> <span class="fu">sub</span>(<span class="st">&quot;(_.*)$&quot;</span>, <span class="st">&quot;&quot;</span>, site_to_show)</span>
 <span id="cb79-7"><a href="#cb79-7" tabindex="-1"></a>base_protein</span></code></pre></div>
 <pre><code>## [1] &quot;Q96D46&quot;</code></pre>
@@ -2391,12 +2492,12 @@ site</h3>
 ## 1:   0.969159   &lt;NA&gt;         0.6796875            0.1796875</code></pre>
 </div>
 <div id="table-dinterprétation-compacte" class="section level3">
-<h3>9.3.3. Table d’interprétation “compacte”</h3>
+<h3>9.4.3. Table d’interprétation “compacte”</h3>
 <p>Cette table contient les valeurs clés:</p>
 <ul>
 <li>log2FC PTM (non ajusté)</li>
 <li>log2FC de la protéine</li>
-<li>log2FC ajusté (≈ PTM − protéine)</li>
+<li>log2FC ajusté (= PTM - protéine)</li>
 <li>p-values ajustées</li>
 </ul>
 <div class="sourceCode" id="cb83"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb83-1"><a href="#cb83-1" tabindex="-1"></a>interp <span class="ot">&lt;-</span> <span class="fu">data.table</span>(</span>
@@ -2419,7 +2520,7 @@ site</h3>
 ## 1:        1.494432     0.03293318         0.001694409</code></pre>
 </div>
 <div id="comment-expliquer-le-résultat" class="section level3">
-<h3>9.3.4. Comment expliquer le résultat</h3>
+<h3>9.4.4. Comment expliquer le résultat</h3>
 <p>Utilisez cette logique :</p>
 <ul>
 <li>Si le <strong>log2FC PTM est élevé</strong>, mais que le
@@ -2435,7 +2536,7 @@ sa significativité), alors le signal PTM initial était probablement
 confondu avec les changements d’abondance de la protéine.</li>
 </ul>
 <hr />
-<p>### Optionnel : afficher plusieurs sites à la fois (top 10 après
+<p>Optionnel : afficher plusieurs sites à la fois (top 10 après
 ajustement)<br />
 C’est utile pour montrer que l’ajustement peut modifier l’ordre des «
 meilleurs hits » (top hits).</p>

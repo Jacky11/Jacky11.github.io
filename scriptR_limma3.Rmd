@@ -1,7 +1,8 @@
 ---
-title: "Utiliser R et le package `limma` après une recherche MaxQuant pour l’analyse de PTM"
+title: Utiliser R et le package `limma` après une recherche MaxQuant pour l’analyse
+  de PTM
 author: "Ecole thématique CNRS 2026 - Sète"
-date: ""
+date: ''
 output:
   html_document:
     toc: true
@@ -10,6 +11,9 @@ output:
     number_sections: false
     theme: united
     highlight: tango
+  pdf_document:
+    toc: true
+    toc_depth: '4'
 ---
 
 ```{r setup, include=FALSE}
@@ -66,6 +70,17 @@ Tester la nullité du coefficient lié à cette interaction permet de répondre 
 
 On installe les packages nécessaires si besoin. Ce n’est à exécuter qu’une seule fois par machine.
 
+Voici ce que fait chaque package: 
+
+-   BiocManager  : permet d'installer les packages dispo sur Bioconductor (packages uniquement bioinformatiques). Il est conseillé d'installer la dernière version disponible.
+-   limma        : estime des modèles linéaires adaptés aux données omiques et permet d'effectuer des t-tests modérés
+-   data.table   : lecture rapide de gros jeux de données (fread)
+-   ggplot2      : permet de créer des graphiques pour publications
+-   reshape2     : permet de reformater des data frames d'un format long à un format large (nécessaire pour ggplot2)
+-   stringi      : permet de faire de la manipulation de chaines de caractères 
+-   ggridges     : permet de faire des plots "ridge" (pour l'affichage des densités d'intensité par échantillons)
+
+
 ```{r install, eval=FALSE}
 if (!require("BiocManager", quietly = TRUE))
   install.packages("BiocManager")
@@ -80,9 +95,7 @@ install.packages("ggridges")
 
 ## 3.2 Chargement
 
-Nous chargeons ici les packages utilisés dans la session R.  
-Le package **limma** sert à ajuster les modèles linéaires et à tester les effets d’intérêt.  
-Le package **data.table** permet de lire rapidement les gros fichiers texte issus de MaxQuant, tandis que **ggplot2** et **reshape2** sont utilisés pour les visualisations.  
+Nous chargeons ici les packages utilisés dans la session R utilisée (après leur installation, ils ne sont pas chargés automatiquement dans la session).  
 
 ```{r libraries}
 library(limma)
@@ -101,6 +114,9 @@ Nous téléchargeons directement depuis PRIDE les deux fichiers utilisés dans l
 - `PhosphoSTYSites.txt` pour les peptides phosphorylés.
 
 Nous remplaçons ensuite les espaces par des points dans les noms de colonnes, afin de faciliter leur manipulation dans R.
+fread() est comme read.table() mais beaucoup plus rapide pour des gros fichiers.
+Après chargement, on remplace les espaces dans les noms de colonnes par des points pour une manipulation plus facile depuis R (e.g., "Protein IDs" devient "Protein.IDs").
+
 
 ```{r import-data}
 data.prot <- fread("https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/07/PXD020019/proteinGroups.txt")
@@ -137,7 +153,7 @@ Comme classiquement avec MaxQuant, nous retirons ici deux types d’identificati
 - les entrées `Reverse`, utilisées pour estimer le taux de faux positifs ;
 - les `Potential contaminant`, correspondant à des contaminants connus.
 
-Ce filtrage est une étape standard de pré-traitement.
+Ce filtrage est une étape standard de pré-traitement. Comme les protéines associées sont indiquées par "+", on effectue la commande suivante:
 
 ```{r filter-identifications}
 data.ptm <- data.ptm[
@@ -159,7 +175,7 @@ data.ptm <- data.ptm[which(data.ptm$Localization.prob > 0.75), ]
 
 Nous extrayons ici la matrice d’intensités des phosphopeptides à partir des colonnes contenant `Intensity.Phospho`.  
 Dans les sorties MaxQuant, les zéros correspondent en pratique à des valeurs manquantes pour l’analyse quantitative ; nous les remplaçons donc par `NA`.  
-Enfin, nous convertissons toutes les colonnes en numérique afin de pouvoir appliquer les traitements statistiques ultérieurs.
+Enfin, nous convertissons toutes les colonnes en objet "numérique" afin de pouvoir appliquer les traitements statistiques ultérieurs.
 
 ```{r build-ptm}
 int.ptm <- as.data.frame(data.ptm)[, grep("Intensity.Phospho", names(data.ptm))]
@@ -185,16 +201,20 @@ Nous conservons en parallèle trois informations essentielles :
 Cette restructuration est importante, car elle permet d’analyser ensuite chaque combinaison peptide x multiplicité comme une entité quantitative distincte.
 
 ```{r multiplicity}
+#Création de trois matrices, chacune caractérisée par le nombre de modifications
 mat1 <- int.ptm[, grep("___1", colnames(int.ptm))]
 mat2 <- int.ptm[, grep("___2", colnames(int.ptm))]
 mat3 <- int.ptm[, grep("___3", colnames(int.ptm))]
 
+#Standardisation des noms des colonnes des trois matrices
 colnames(mat1) <- gsub("___1", "", colnames(mat1))
 colnames(mat2) <- gsub("___2", "", colnames(mat2))
 colnames(mat3) <- gsub("___3", "", colnames(mat3))
 
+#On met bout à bout les trois matrices (chacune en dessous de l'autre)
 int.ptm.mod <- rbind(mat1, mat2, mat3)
 
+#On créé les vecteurs contenant les identifiants des PTMs, protéines et la multiplicité (nombre de PTMs associés)
 id.ptm <- rep(data.ptm$id, 3)
 id.pg  <- rep(data.ptm$Protein.group.IDs, 3)
 multiplicity <- c(
@@ -208,7 +228,7 @@ multiplicity <- c(
 
 Certaines lignes de la matrice PTM ne contiennent aucune intensité observée.  
 Ces lignes ne peuvent pas contribuer à l’analyse statistique et sont donc supprimées.  
-Nous appliquons le même filtrage aux vecteurs d’annotation associés afin de conserver la cohérence entre les données et leurs métadonnées.
+Nous appliquons le même filtrage aux vecteurs d’annotation associés (id.ptm, id.pg, multiplicity) afin de conserver la cohérence entre les données et leurs métadonnées.
 
 ```{r remove-empty-ptm}
 sum_notna <- apply(int.ptm.mod, 1, function(x) sum(!is.na(x)))
@@ -251,7 +271,7 @@ head(data.ptm.mod[, 1:8])
 
 Nous construisons ici la matrice d’intensités protéiques à partir de `proteinGroups.txt`.  
 Les colonnes correspondant aux fractions enrichies en PTM sont retirées, car nous voulons quantifier ici les protéines à partir des échantillons non enrichis.  
-Comme précédemment, les zéros sont remplacés par `NA`, puis les colonnes sont converties en numérique.  
+Comme précédemment, les zéros sont remplacés par `NA`, puis les colonnes sont converties en objet "numérique".  
 Nous ajoutons enfin l’identifiant de groupe protéique, qui sera utilisé pour l’appariement avec les peptides modifiés.
 
 ```{r build-prot}
@@ -272,12 +292,17 @@ data.prot.mod <- data.frame(
 
 # 6. Définir le plan expérimental
 
-D’après l’étude :
+Le package R "limma" nécessite de savoir quel échantillon appartient à quel groupe expérimental. 
+Il faut lui fournir une matrice de "design" et une matrice de "contraste".
+La matrice de "design" caractérise le design expérimental. 
+La matrice de "contraste" caractérise quelles conditions vont être comparées (c.à.d. le test statistique utilisé).
+
+Dans notre cas:
 
 - PTM : 12 colonnes = 2 conditions × 2 temps × 3 répétitions ;
 - protéines : 16 colonnes = 2 conditions × 2 temps × 4 répétitions.
 
-Cette étape est essentielle, car toute la modélisation statistique repose sur un bon codage du design expérimental.
+L'étape de la définition du design expérimental est essentielle, car toute la modélisation statistique repose sur un bon codage du design expérimental.
 
 ## 6.1 Design PTM
 
@@ -306,7 +331,7 @@ data.frame(
 
 ## 6.2 Design protéines
 
-Nous faisons de même pour les colonnes protéiques.  
+Nous faisons de même pour les colonnes protéiques. Ici, on a quatre réplicats au lieu de 3.  
 Il est important de vérifier que l’ordre supposé des échantillons correspond bien à l’ordre des colonnes importées.
 
 ```{r design-prot}
@@ -336,7 +361,7 @@ Les intensités des protéines sont généralement analysées après transformat
 Cette transformation permet :
 
 - de réduire l’asymétrie des distributions ;
-- de stabiliser la variance des intensités;
+- de stabiliser la variance des intensités (les intensités plus élevées ayant une variance initialement plus élevées, ce qui peut impacter le test statistique);
 - d’interpréter plus facilement les différences comme des changements relatifs.
 
 C’est une étape standard avant l’application de modèles linéaires.
@@ -360,11 +385,11 @@ sum_notna_ptm <- apply(log2.int.ptm, 1, function(x) sum(!is.na(x)))
 # Conserver les phosphopeptides observés dans tous les échantillons PTM
 log2.int.ptm.complete <- log2.int.ptm[sum_notna_ptm == ncol(log2.int.ptm), ]
 
-# Mise en forme en data.frame long
+# Mise en forme d'un dataset avec une colonne par échantillon, en un data.frame long (une ligne par protéine)
 df.ptm <- melt(log2.int.ptm.complete)
 colnames(df.ptm) <- c("Feature", "Sample", "log2Intensity")
 
-# Ordre d'affichage des échantillons
+# On renverse l'ordre d'affichage des échantillons
 df.ptm$Sample <- factor(df.ptm$Sample, levels = rev(colnames(log2.int.ptm.complete)))
 
 ggplot(df.ptm, aes(x = log2Intensity, y = Sample, fill = after_stat(x))) +
@@ -393,9 +418,10 @@ ggplot(df.ptm, aes(x = log2Intensity, y = Sample, fill = after_stat(x))) +
 
 ## 7.3 Corrélation entre échantillons PTM
 
-Cette matrice de corrélation permet d’évaluer la similarité globale entre échantillons PTM.  
+Cette matrice de corrélation permet d’évaluer la similarité globale entre échantillons. 
+Ici, la corrélation entre 2 échantillons n'est évaluée qu'avec les valeurs quantifiées entre les 2 échantillons ("pairwise.complete.obs").
 Des corrélations élevées sont attendues entre répétitions biologiques d’une même condition.  
-Cette visualisation constitue un contrôle qualité simple pour détecter d’éventuels échantillons atypiques.
+Cette visualisation constitue un contrôle qualité simple pour détecter d’éventuels échantillons atypiques (leurs valeurs quantifiées ne corrèlent pas).
 
 ```{r correlation-plot}
 cor.ptm <- cor(log2.int.ptm, use = "pairwise.complete.obs")
@@ -412,10 +438,13 @@ heatmap(
 
 Une étape de normalisation est généralement nécessaire pour corriger les décalages globaux entre échantillons avant d’interpréter les différences biologiques.
 
+Des petites différences d'intensité systématiques peuvent exister entre échantillons (par exemple à cause de gammes dynamiques légèrement différentes).
+Une normalisation "légère" peut permettre de corriger ces "shifts" globaux tout en préservant les différences biologiques.
+
 ## 8.1 Fonction de normalisation par médiane
 
 Nous définissons ici une fonction de normalisation simple par centrage de la médiane au sein de chaque groupe biologique.  
-L’idée est de corriger des décalages globaux entre échantillons, tout en conservant la structure biologique de l’expérience.  
+L’idée est de corriger des décalages globaux entre réplicats d'une même condition, tout en conservant la structure biologique de l’expérience.  
 
 ```{r norm-function}
 median.norm <- function(intensities, condition){
@@ -452,7 +481,7 @@ median.norm <- function(intensities, condition){
 
 ## 8.2 Appliquer la normalisation
 
-Nous appliquons ici la fonction de normalisation aux données PTM et aux données protéiques.  
+Nous appliquons ici la fonction de normalisation aux échantillons enrichis en PTM et aux échantillons de protéomique globale.  
 À partir de cette étape, nous travaillons sur les intensités log2 normalisées.
 
 ```{r apply-normalization}
@@ -462,7 +491,7 @@ log2.int.prot.norm <- median.norm(log2.int.prot, CondTime.prot)
 
 # 9. Apparier les PTM à leurs protéines
 
-La comparaison entre peptide modifié et protéine suppose un appariement explicite entre les deux niveaux d’information. C’est cette mise en correspondance qui permet ensuite de poser la bonne question statistique (c.à.d. bien définir la matrice de contraste à tester).
+La comparaison entre peptide modifié et protéine suppose un appariement explicite entre les deux niveaux d’information. C’est cette mise en correspondance qui permet ensuite de poser la bonne question statistique (c.à.d. de bien définir la matrice de contraste à tester).
 
 ## 9.1 Fonction d’appariement
 
@@ -484,9 +513,9 @@ extract_first_matching_pg <- function(pg_string, available_ids) {
 ## 9.2 Apparier les identifiants
 
 Nous appliquons la fonction d’appariement à tous les peptides modifiés.  
-Les peptides ne pouvant pas être reliés à une protéine quantifiée sont exclus de la suite de cette analyse.
-Cela garantit que toute comparaison PTM versus protéine repose sur un appariement explicite.
-On peut cependant garder ces peptides pour un examen ultérieur au besoin.
+Pour simplifier, les peptides ne pouvant pas être reliés à une protéine quantifiée sont exclus de la suite de cette analyse.
+Cela garantit que toute comparaison PTM versus protéine repose sur un "match" explicite.
+En pratique, on peut cependant exporter ces peptides dans des fichiers séparés pour un examen ultérieur.
 
 ```{r map-ptm-to-prot}
 mapped_pg <- sapply(
@@ -638,13 +667,50 @@ colnames(fit.global$coefficients)
 
 # 12. Tester les effets biologiques d’intérêt
 
-## 12.1 Test principal : la dynamique temporelle du PTM relativement à la protéine dépend-elle de l’infection ?
+## 12.1 Rappel sur les matrices de "design" et de "contraste"
+
+Un modèle de régression linéaire peut s'écrire comme:
+$$Y=XB+\epsilon$$
+où $Y$ est un vecteur contenant les intensités des protéines/peptides dans différents échantillons, $B$ est un vecteur de paramètres, $\epsilon$ est un bruit blanc Gaussien, et $X$ est la matrice de **design**. 
+
+Cette dernière définit le modèle qui sera utilisé pour modéliser les intensités des protéines/peptides.
+
+Par exemple, dans un cas simple "contrôle vs mutant" avec 3 réplicats dans chaque condition, le modèle linéaire sera:
+$$\begin{bmatrix} y_{1}\\
+y_{2}\\
+y_{3}\\
+y_{4}\\
+y_{5}\\
+y_{6}
+\end{bmatrix}=\begin{bmatrix}1 & 0\\
+1 & 0\\
+1 & 0\\
+1 & 1\\
+1 & 1\\
+1 & 1
+\end{bmatrix}\begin{bmatrix}\alpha \\ \beta\end{bmatrix}+\epsilon$$
+
+Lorqu'on utilise un test statistique, on s'intéresse à tester si des paramètres de ce modèle sont nuls (ou une combinaison linéaire de ces paramètres).
+
+Par exemple, dans le cas "contrôle vs mutant" précédent, on s'intéresse à tester la nullité du paramètre $\beta$.
+
+Ceci peut être formulé comme une multiplication entre une matrice de "contraste" et le vecteur de paramètres, c.-à-d. qu'on veut tester si:
+$$\begin{bmatrix}0 & 1
+\end{bmatrix}\begin{bmatrix}\alpha \\ \beta\end{bmatrix}=0 \Leftrightarrow \beta=0$$
+
+Plus généralement, le test statistique peut s'exprimer comme:
+$$H_0: C^tB=0\qquad  vs\qquad H_1: C^tB\neq0$$
+où $C$ est définie comme la matrice de **contraste**.
+
+## 12.2 Test principal : la dynamique temporelle du PTM relativement à la protéine dépend-elle de l’infection ?
 
 Nous extrayons ici les résultats permettant de répondre à la question biologique. Il faut tester si le paramètre associé à l’interaction triple  
-`CompPTM:ConditionSARS_COV_2:Time24h` est nul. S'il ne l'est pas, cela signifie que la réponse à la question posée est "oui".
+`CompPTM:ConditionSARS_COV_2:Time24h` est nul. S'il ne l'est pas, cela signifie que la réponse à la question posée est "oui, cela dépend de l'infection".
 
 Ce terme teste si l’effet du temps sur le PTM relativement à la protéine dépend de la condition biologique.  
 C’est une façon rigoureuse de demander si l’infection par le SARS-CoV-2 modifie la dynamique temporelle du peptide phosphorylé relativement à sa protéine d’appartenance.
+
+De façon pratique, la fonction "topTable" permet de renseigner le coefficient qui nous intéresse et créer elle-même la matrice "contraste" nécessaire.
 
 Nous calculons également des p-values ajustées pour contrôler le taux de fausses découvertes.
 
@@ -673,7 +739,7 @@ res.triple <- merge(
 head(res.triple)
 ```
 
-### 12.1.1 Nombre de peptides significatifs
+### 12.2.1 Nombre de peptides significatifs
 
 Cette commande donne le nombre de peptides pour lesquels l’interaction triple est significative au seuil de 5 % après correction pour tests multiples.  
 Cela fournit une première estimation du nombre de candidats potentiellement régulés spécifiquement au niveau PTM.
@@ -682,7 +748,7 @@ Cela fournit une première estimation du nombre de candidats potentiellement ré
 sum(res.triple$adj.P.Val < 0.05, na.rm = TRUE)
 ```
 
-### 12.1.2 Top résultats
+### 12.2.2 Top résultats
 
 Nous affichons ici les peptides les plus significatifs pour le test principal.  
 Les colonnes les plus importantes à interpréter sont :
@@ -702,7 +768,7 @@ head(
 )
 ```
 
-## 12.2 Test secondaire : interaction Comp × Time
+## 12.3 Test secondaire : interaction Comp × Time
 
 Ici, on cherche à identifier les peptides pour lesquels la dynamique temporelle diffère globalement de celle de la protéine, sans tenir compte spécifiquement du statut infecté ou non.
 
@@ -718,7 +784,7 @@ res.comptime$adj.P.Val <- p.adjust(res.comptime$P.Value, method = "BH")
 sum(res.comptime$adj.P.Val < 0.05, na.rm = TRUE)
 ```
 
-## 12.3 Test secondaire : interaction Comp × Condition
+## 12.4 Test secondaire : interaction Comp × Condition
 
 Ce test porte sur l’interaction `Comp × Condition`, indépendamment du temps.  
 Il permet de détecter des différences entre PTM et protéine associée selon la condition biologique, mais sans modéliser ici leur évolution temporelle.
@@ -747,7 +813,7 @@ Il met en relation :
 - la taille de l’effet estimé (`logFC`) ;
 - la significativité statistique (`-log10(p-value)`).
 
-Les points colorés en rouge correspondent aux peptides significatifs après correction multiple.  
+Les points colorés en rouge correspondent aux peptides significatifs après contrôle du FDR.  
 Ce type de graphique permet de repérer rapidement les candidats les plus marqués.
 
 ```{r volcano-triple}

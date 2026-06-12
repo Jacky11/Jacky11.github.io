@@ -1,0 +1,581 @@
+---
+title: "Quality control and differential analysis of MS-based omics data"
+author: "Quentin Giai Gianetto"
+date: ' '
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 4
+    number_sections: no
+    theme: united
+    highlight: tango
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+<!-- ```{r setup, include=FALSE} -->
+<!-- knitr::opts_chunk$set(echo = TRUE, warning = FALSE) -->
+<!-- ``` -->
+
+# 1. Introduction
+  
+In this vignette, we show how to create quality control reports using R.
+
+For this,  we explain how to create some nice plots to check the reproducibility of identified peptides/proteins and of their quantified values, and to incorporate them in a report where everything can be changed in the images from Microsoft PowerPoint.
+
+# 2.  Checking the reproducibility of identifications and quantified values
+
+A MS experiment can work in a good fashion but the biological conditions are not clustering together because of the preparation of samples for instance. We show here how to provide essential plots to check this.
+
+We start from the proteinGroups.txt file of MaxQuant, but the method can be applied from any matrix of quantified values.
+
+Also, we provide a method to export any R plot into a PowerPoint file where everything in the image can be changed from PowerPoint. 
+This is of definite interest to provide nice plots for scientific papers.
+
+## 2.1 Importing a matrix of quantified values in R
+
+For the next, we will use a *proteinGroups.txt* file of MaxQuant from a dataset of the proteomics facility of the Institut Pasteur that leads to a publication (PMID: 31851926). 
+
+In this section, any file from another software can also be used as long as it provides the intensities of peptides/proteins in different samples.
+
+R can be used to directly download the data from PRIDE, unzip the file and extract the *proteinGroups.txt* file:
+
+```{r, eval=TRUE}
+
+temp <- tempfile()
+download.file("https://github.com/Jacky11/Jacky11.github.io/raw/refs/heads/main/proteinGroups.zip",temp)
+data <- read.csv(unz(temp, "proteinGroups.txt"),header=TRUE,sep="\t",quote="")
+unlink(temp)
+
+```
+
+You can also do it "by hands". Indeed, all the MaxQuant output files of our study can be downloadable from PRIDE by clicking here (txt.zip file) and unzipping the file afterwards: https://ftp.pride.ebi.ac.uk/pride/data/archive/2020/01/PXD012825/txt.zip
+
+Details on the dataset are available here: https://www.ebi.ac.uk/pride/archive/projects/PXD012825
+
+If you have produce your own txt file from MaxQuant, you just have to use:
+
+```{r, eval=FALSE}
+
+data <- read.csv("C:/path_to_your_file/txt/proteinGroups.txt",header=TRUE,sep="\t",quote="")
+
+```
+
+## 2.2 Checking and transforming the data
+
+After importing the data in R, you can check the dataset structure:
+```{r, eval=FALSE}
+
+#structure of the dataset
+str(data)
+
+```
+
+Also, the number of proteins identified can be obtained with:
+```{r, eval=TRUE}
+
+#number of rows (proteins) in the dataset
+nrow(data)
+
+```
+
+For the next, we are interested in the number of unique peptides identified for each protein of the dataset. They can be extracted using:
+```{r, eval=TRUE}
+
+datap=data[,grep("Unique.peptides.",colnames(data))]
+
+```
+
+Also, we are interested in the intensities measured for each protein of the dataset. They can be extracted using:
+```{r, eval=TRUE}
+
+datai=data[,grep("Intensity.",colnames(data))]
+
+```
+
+In MaxQuant, missing values are 0. Replace 0 by NA to allow R to identify missing values:
+```{r, eval=TRUE}
+
+datai[datai==0]=NA
+
+```
+
+Additionally, it is useful to transform the data with a log2 transformation:
+
+```{r, eval=TRUE}
+
+datai=log2(datai)
+
+```
+
+Columns of the dataset can be renamed by deleting their common pattern:
+```{r, eval=TRUE}
+
+short.name=unlist(strsplit(colnames(datap),split="Unique.peptides."))
+short.name=short.name[short.name!=""]
+colnames(datap)=short.name
+
+short.name=unlist(strsplit(colnames(datai),split="Intensity."))
+#or if you use LFQ intensities:
+#short.name=unlist(strsplit(colnames(datai),split="LFQ.intensity."))
+short.name=short.name[short.name!=""]
+colnames(datai)=short.name
+
+```
+
+To ensure everything is correct, the first rows of the dataset can be checked with the *head()* function, and the *str()* function can be used to check the data set structure:
+```{r, eval=FALSE}
+
+head(datap)
+str(datap)
+
+head(datai)
+str(datai)
+
+```
+
+## 2.3 Checking identifications
+
+A first step consists to check how many proteins have been identified with unique peptides in the dataset (peptides specific to only one protein in the database used to identify). Also, how many are identified in two samples, specifics to one sample, etc. 
+
+When the samples are highly reproducible, one can expect that the same proteins
+will be identified in each of the samples. The intersections between the sets of proteins identified in the samples can be visualized using UpSet graphs to highlight any aberrant sample.
+
+### 2.3.1 Upset plots of identified proteins
+
+Creating a matrix containing the row number of an identified peptide if it is quantified:
+
+```{r, eval=TRUE}
+
+ind_datap=datap
+ind_datap[ind_datap>0]=1;
+vecto=as.matrix(1:nrow(ind_datap));
+row.nb.id=apply(ind_datap,2,function(x) x*vecto);
+
+```
+
+Installing the UpSetR R package:
+```{r, eval=FALSE}
+
+install.packages("UpSetR")
+
+```
+
+
+Plotting the UpSet graph with R:
+```{r, eval=TRUE, warning=FALSE}
+
+library(UpSetR)
+
+data.upset=as.data.frame(ind_datap)
+
+upset.plot = upset(data.upset, 
+                   order.by = "freq",
+                   number.angles=315, 
+                   main.bar.color=4, 
+                   nsets=ncol(data.upset),
+                   sets.x.label="Nb of proteins", 
+                   text.scale = c(1.5,1,1.5,1,1,1), 
+                   mb.ratio=c(0.55,0.45));
+
+#To visualize
+upset.plot
+
+```
+
+Details on the interpretation of such plots can be found here: https://upset.app/
+
+### 2.3.2 Hierarchical clustering of identified proteins
+
+The reproducibility of the identifications between two samples can be evaluated using Jaccard index. This index
+can be computed using the *jaccard()* function of the R package *jaccard*.
+
+Installing the *jaccard* R package:
+```{r, eval=FALSE}
+
+install.packages("jaccard")
+
+```
+
+
+```{r, eval=TRUE}
+library(jaccard)
+
+mat.jaccard=matrix(NA,ncol(data.upset),ncol(data.upset))
+
+for (i in 1:ncol(data.upset)){
+for (j in 1:ncol(data.upset)){
+mat.jaccard[i,j]=jaccard(data.upset[,i],data.upset[,j]);
+}}
+
+colnames(mat.jaccard)=colnames(data.upset)
+rownames(mat.jaccard)=colnames(data.upset)
+```
+
+Additionally, a distance matrix based on this index can be computed with the *as.dist()* function, and
+a hierarchical clustering of samples can be performed with the *hclust()* function:
+
+```{r, eval=TRUE}
+hv = hclust(as.dist(1-mat.jaccard),method="ward.D2")
+```
+
+The clustering can be visualized with the *ggdendrogram* function of the R package
+*ggdendro*. It requires also the *ggplot2* R package.
+
+Installing the *ggdendro* and *ggplot2* R packages:
+```{r, eval=FALSE}
+
+install.packages("ggdendro")
+install.packages("ggplot2")
+
+```
+
+```{r, eval=TRUE}
+
+library(ggdendro)
+library(ggplot2)
+
+ggd = ggdendrogram(hv, rotate = TRUE, theme_dendro = FALSE)
+ggd = ggd + theme(axis.text.y = element_text(hjust = 1))
+ggd = ggd + xlab("Sample")
+ggd = ggd + ylab("Height")
+ggd = ggd + ggtitle("Ward’s method with a Jaccard index-based distance")
+
+#To visualize
+ggd
+
+```
+
+We see that the samples are clustering by conditions and that the "M" conditions is far from the others: the identified proteins are globally the same in the samples of a same conditions, but different between conditions.
+
+Additionally, the same approach can be used to evaluate the replication of the "nonidentifications" (missing values) between samples. The dataset to use in the previous function is the next:
+
+```{r, eval=TRUE}
+ind_datap=datap
+ind_datap[datap==0]=1;
+ind_datap[datap>0]=0;
+data.upset=as.data.frame(ind_datap)
+```
+
+## 2.4 Checking quantified values
+
+### 2.4.1 Plotting the distributions of observed values
+
+The differences between the distributions of observed values can be used to see whether samples have globally lower or higher quantified values than in the others. 
+
+To check if the distribution of quantified values are the same in different samples, it is important to focus exclusively on proteins which are quantified in all samples you want to
+compare. 
+
+Installing the *ggplot2* and *ggridges* R packages to plot the distributions:
+```{r, eval=FALSE}
+
+install.packages("ggplot2")
+install.packages("ggridges")
+
+```
+
+Deleting proteins not quantified in all samples:
+```{r, eval=TRUE}
+datai_allq=na.omit(datai)
+```
+
+Formatting into a dataframe to use ggplot:
+```{r, eval=TRUE}
+df=stack(data.frame(datai_allq));
+colnames(df)=c("log2_intensities","Samples");
+```
+
+Plotting using *stat_density_ridges* function of the *ggridges* R package:
+
+```{r, eval=TRUE}
+library(ggplot2)
+library(ggridges)
+dis.obs = ggplot(df, aes(x=log2_intensities, y=Samples, fill=
+stat(x)))
+dis.obs=dis.obs+stat_density_ridges(geom="density_ridges_gradient",
+scale=3,size=0.3,rel_min_height = 0.01,quantile_lines=TRUE,
+quantiles = 0.5, alpha = 0.7)
+dis.obs = dis.obs + scale_fill_viridis_c(name="log2(int.)",
+option="C", direction=-1)
+dis.obs = dis.obs + labs(title = "Distribution of intensities
+for proteins without missing values")
+
+dis.obs
+```
+
+### 2.4.2 Correlation matrix of quantified values
+
+A Pearson correlation matrix using only complete pairs of observations between two samples to compute each Pearson
+correlation coefficient can be obtained by using:
+
+```{r, eval=TRUE}
+
+mat.cor=cor(datai, use = "pairwise.complete.obs");
+
+```
+
+Next, they can be visualized with the *corrplot* function of the *corrplot* R package.
+
+Installing the *corrplot* R package:
+
+```{r, eval=FALSE}
+
+install.packages("corrplot")
+
+```
+
+```{r, eval=TRUE}
+
+library(corrplot)
+
+matc=corrplot(mat.cor, order = "hclust", tl.cex=0.5, number.cex=0.5, addrect = 2);
+
+```
+
+```{r, eval=TRUE}
+
+matc=corrplot.mixed(mat.cor, order = "hclust", tl.cex=0.5, number.cex=0.5);
+
+```
+
+The correlation matrix allows justifying that there is a good repeatability of quantified values along the samples. It can be useful for determining which biological conditions are close, and which are less so.
+
+### 2.4.3 Hierarchical clustering of quantified values
+
+Clustering methods can be applied from the obtained Pearson correlation-based distance matrix to illustrate if the intensities measured in different samples are close or not:
+
+```{r, eval=TRUE}
+
+hvc = hclust(as.dist(1-mat.cor),method="ward.D2")
+
+require(ggdendro)
+ggdc = ggdendrogram(hvc, rotate = TRUE, theme_dendro = FALSE)
+ggdc = ggdc + theme(axis.text.y = element_text(hjust = 1))
+ggdc = ggdc + xlab("Sample")
+ggdc = ggdc + ylab("Height")
+ggdc = ggdc + ggtitle("Ward’s method with a Pearson correlation-based distance")
+
+ggdc
+
+```
+
+We see that the samples of the "M" conditions are clustering together, but that the "N" and "H" condition are mixed together: the quantified values of proteins in the "H" and "N" conditions are globally quite close.
+
+## 2.5 Exporting all the plots in a PowerPoint where everything can be changed
+
+Here, we explain how to generate a PPTX report file with the R plots previously generated and where everything can be changed in the images.
+
+For this, we use the *export* R package: https://github.com/tomwenseleers/export
+
+### 2.5.1 Installing the *export* R package from Github
+
+The export R packages depends on several R packages that needs to be installed in a first step:
+
+```{r, eval=FALSE}
+
+install.packages("officer")
+install.packages("rvg")
+install.packages("openxlsx")
+install.packages("ggplot2")
+install.packages("flextable")
+install.packages("xtable")
+install.packages("rgl")
+install.packages("stargazer")
+install.packages("tikzDevice")
+install.packages("xml2")
+install.packages("broom")
+install.packages("devtools")
+
+#installation of the export R package
+devtools::install_github("tomwenseleers/export")
+
+```
+
+### 2.5.2 Creating your own report
+
+Once installed, the *graph2ppt()* function of the *export* R package can be used to create the PowerPoint file. 
+
+The *vector.graphic* option is used to create modifiable graphics, the *append* option is used to add a slide in an already existing powerpoint file.
+
+```{r, eval=FALSE}
+
+#load the export R package
+library(export)
+
+#Upset plot of proteins identified with unique peptides
+
+upset.plot
+
+graph2ppt(file="C:/path_to_your_file/reportQC.pptx", width=7,height=5,vector.graphic = TRUE)
+
+#Hierarchical clustering of identified proteins
+
+ggd
+
+graph2ppt(file="C:/path_to_your_file/reportQC.pptx", width=7,height=5,vector.graphic = TRUE, append=TRUE)
+
+#Distribution of quantified values
+
+dis.obs
+
+graph2ppt(file="C:/path_to_your_file/reportQC.pptx", width=7,height=5,vector.graphic = TRUE, append=TRUE)
+
+#Correlation matrix with 2 rectangles
+
+corrplot(mat.cor, order = "hclust", tl.cex=0.5, number.cex=0.5, addrect = 2);
+
+graph2ppt(file="C:/path_to_your_file/reportQC.pptx", width=7,height=5,vector.graphic = TRUE, append=TRUE)
+
+#Correlation matrix with Pearson correlation coefficients
+
+corrplot.mixed(mat.cor, order = "hclust", tl.cex=0.5, number.cex=0.5);
+
+graph2ppt(file="C:/path_to_your_file/reportQC.pptx", width=7,height=5,vector.graphic = TRUE, append=TRUE)
+
+#Hierarchical clustering of quantified values
+
+ggdc
+
+graph2ppt(file="C:/path_to_your_file/reportQC.pptx", width=7,height=5,vector.graphic = TRUE, append=TRUE)
+
+
+```
+
+If you have managed to get this far, you have a report in pptx format in the *"C:/path_to_your_file"* folder with images that you can modify from PowerPoint to include them in scientific papers for example.
+
+
+
+
+
+
+
+# 3. Differential analysis using the R package "limma"
+
+The R package "limma" requires knowing which sample belongs to which experimental group.
+
+It must be provided with a "design" matrix and a "contrast" matrix.
+
+The "design" matrix characterizes the experimental design.
+
+The "contrast" matrix characterizes which conditions will be compared (i.e., the statistical test used).
+
+The experimental design definition step is essential, as all statistical modeling relies on accurate coding of the experimental design.
+
+## 3.1 Concept of Design and Contrast matrices
+
+A linear regression model can be written as:
+$$Y=XB+\epsilon$$
+where $Y$ is a vector containing the intensities of proteins/peptides in different samples, $B$ is a parameter vector, $\epsilon$ is Gaussian white noise, and $X$ is the **design** matrix.
+
+This matrix defines the model that will be used to model the intensities of the proteins/peptides.
+
+For example, in a simple "control vs. mutant" case with 3 replicates in each condition, the linear model will be:
+
+$$\begin{bmatrix} y_{1}\\
+y_{2}\\
+y_{3}\\
+y_{4}\\
+y_{5}\\
+y_{6}
+\end{bmatrix}=\begin{bmatrix}1 & 0\\
+1 & 0\\
+1 & 0\\
+1 & 1\\
+1 & 1\end{bmatrix}\begin{bmatrix}\alpha \\ \beta\end{bmatrix}+\epsilon$$
+
+When using a statistical test, we are interested in testing whether the parameters of this model are zero (or a linear combination of these parameters).
+
+For example, in the previous "control vs. mutant" case, we are interested in testing the nullity of the parameter $\beta$.
+
+This can be formulated as a multiplication between a "contrast" matrix and the parameter vector, i.e., we want to test if:
+
+$$\begin{bmatrix}0 & 1
+\end{bmatrix}\begin{bmatrix}\alpha \\ \beta\end{bmatrix}=0 \Leftrightarrow \beta=0$$
+
+More generally, the statistical test can be expressed as:
+$$H_0: C^tB=0\qquad vs\qquad H_1: C^tB\neq0$$
+where $C$ is defined as the **contrast** matrix.
+
+## 3.2 Creating the design matrix
+
+Here, “H”, “M” and “N” are different biological conditions. So, the vector indicating the experimental design contains the conditions of each sample:
+
+
+```{r, eval=FALSE}
+colnames(datai_allq)
+
+conditions=rep(c("H","M","N"),7)
+
+conditions
+```
+
+
+The most current framework is the Case-Control one. Typically, you have two biological conditions that you want to compare (ex: Wild Type vs Mutant, Healthy vs Not healthy, etc.). As we have three conditions in our case study, this framework corresponds to compare only two conditions, for instance “M” vs “N”. Thus, only the samples corresponding to the M and N conditions have to be kept:
+
+```{r, eval=FALSE}
+cond_case_ctrl=conditions[conditions%in%c("M","N")]
+```
+
+The design matrix is obtained with the "model.matrix" function:
+
+```{r, eval=FALSE}
+design_case_ctrl=model.matrix(~cond_case_ctrl)
+
+design_case_ctrl
+```
+
+Each row of `design_case_ctrl` corresponds to a sample. Each column of `design_case_ctrl` corresponds to a parameter of the linear model used. The first column of `design_case_ctrl` is composed of 1 and corresponds to the intercept of the linear model. The intercept is dedicated to model the average intensity in the “M” condition (reference condition). The second column is dedicated to model the intensity gap between the “M” and the “N” condition, it is equal to 1 only if the sample belongs to the “N” condition, 0 otherwise.
+
+## 3.3 Fitting the "limma" model
+
+To maintain a simple and robust analysis in this tutorial, we only retain complete profiles, meaning those without missing values. This step reduces the number of proteins analyzed, but it also avoids introducing an imputation strategy that would make the tutorial more cumbersome. Also, we did not applied a normalization to simplify the analysis.
+
+```{r, eval=FALSE}
+datai_case_ctrl=datai_allq[,conditions%in%c("M","N")]
+```
+
+We now fit the linear model with `lmFit`, then apply empirical Bayesian moderation with `eBayes`.
+
+This step is central to the approach of the R package `limma`: it stabilizes variance estimates by sharing information between proteins, thereby improving the robustness of the statistical tests.
+
+```{r, eval=FALSE}
+fit <- lmFit(datai_case_ctrl, design_case_ctrl)
+fit <- eBayes(fit, robust = TRUE)
+
+colnames(fit$coefficients)
+```
+The `topTable` function allows us to specify the coefficient we're interested in and automatically generates the necessary “contrast” matrix.
+
+We also calculate adjusted p-values to control the false discovery rate with `p.adjust`.
+
+```{r, eval=FALSE}
+res <- topTable(
+     fit,
+     coef = "cond_case_ctrlN",
+     number = Inf,
+     sort.by = "P"
+)
+
+res$adj.P.Val <- p.adjust(res$P.Value, method = "BH")
+```
+
+We can now extract the proteins that appear differentially abundant with a FDR of 1% between "M" and "N", and more abundant in N (logFC>0):
+
+```{r, eval=FALSE}
+list_diff=rownames(res[which((res$logFC>0)&(res$adj.P.Val<0.01)),])
+```
+And extract them to perform functional analysis:
+
+```{r, eval=FALSE}
+res_diff=data[which(rownames(data)%in%list_diff),]
+```
+
+They can be exported by:
+```{r, eval=FALSE}
+write.table(res_diff,"C:/path_to_your_file/res_diff.txt",sep="\t",row.names = F)
+```
+
+
+

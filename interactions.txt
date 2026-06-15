@@ -1,0 +1,4 @@
+Source Node	Target Node	Interaction Type	Source Node attribute 1	Source Node attribute 2	Target Node attribute 1	Target Node attribute 2	Edge attribute 1	Edge attribute 2
+CEP55	PDCD6IP	sure	differential	2.5	not differential	0.3	2	0.4
+CEP55	CHMP2B	not sure	differential	2.5	not differential	1.9	3	0.6
+CEP55	TSG101	sure	differential	2.5	differential	4.2	4	0.2
